@@ -44,6 +44,38 @@ pins 3.11 so pyenv/uv users get the same interpreter, and CI tests 3.11 and
 3.12 explicitly — a future change to the machine's `python3` default cannot
 silently change the dev interpreter.
 
+## Phase 2
+
+### PR head checkout: pull ref + SHA verification, env-only auth
+`git fetch --depth 1 origin refs/pull/<n>/head` into a temp dir gives exactly
+the tree the PR diff describes, without history. The fetched commit is
+verified against the head SHA from the API; a mismatch (force-push between
+API call and fetch) raises rather than reviewing one tree with line anchors
+from another. The token reaches git as an `Authorization` header via
+`GIT_CONFIG_*` environment variables — never in argv (visible in `ps`) or in
+the on-disk remote URL. Workspace tests use a local `file://` origin with a
+hand-made `refs/pull/7/head`, so they exercise the real git path offline.
+
+### Reference detection: added lines only, maximal attribute chains
+Only added-line references drive retrieval: deleted lines reference the old
+tree and pure context lines aren't under review. Attribute chains count once
+at full length (`pkg.mod.f`, never also `pkg.mod`), and usage is matched
+through the file's import bindings (aliases, dotted imports, relative
+imports resolved against the containing package). Stdlib modules
+(`sys.stdlib_module_names`) are silently skipped; anything else that can't be
+resolved to a repo file is reported as unresolved rather than dropped.
+
+### Budget: ~4 chars/token estimate, most-referenced first
+No tokenizer dependency — the budget is a guardrail, not an invoice, and a
+chars/4 estimate is backend-neutral across Gemini/Anthropic/Ollama. Ranking
+is reference-count desc, then size asc (more evidence of relevance wins;
+ties prefer cheaper symbols). Re-exports are followed exactly one hop —
+both explicit (`pkg/__init__.py` doing `from .impl import X`) and star form
+(`from .impl import *`, scanning each starred module for the definition).
+The first live smoke test (httpx) showed both public-API patterns are
+ubiquitous; one hop covers them without risking cycles. Module-level constants stay out of scope:
+only top-level function/class definitions are retrieved, per spec.
+
 ## Decisions approved for later phases (reviewed 2026-06-11)
 
 These were agreed before Phase 2 started; implement phases against them.

@@ -12,7 +12,7 @@ No agent frameworks — the agent loop is plain Python over raw HTTP/SDK calls.
 | Phase | Scope | State |
 |-------|-------|-------|
 | 1 | Scaffold, GitHub ingestion, diff parsing, `pra fetch` | done |
-| 2 | Context retrieval (AST-based symbol resolution) | planned |
+| 2 | Context retrieval (AST-based symbol resolution) | done |
 | 3 | Agent loop (triage → review, confidence gate, dedup) | planned |
 | 4 | Posting + dry-run + idempotency | planned |
 | 5 | Eval harness (dataset, judge, report) | planned |
@@ -39,6 +39,9 @@ environment variables only (`GITHUB_TOKEN`, `GEMINI_API_KEY`,
 ```sh
 # Sanity check: fetch a PR and print a parsed diff summary
 pra fetch owner/repo 123
+
+# Check out the PR head and print the symbol context the agent would retrieve
+pra context owner/repo 123
 ```
 
 `GITHUB_TOKEN` is optional for public repos but strongly recommended
