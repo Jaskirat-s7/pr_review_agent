@@ -88,6 +88,52 @@ The first live smoke test (httpx) showed both public-API patterns are
 ubiquitous; one hop covers them without risking cycles. Module-level constants stay out of scope:
 only top-level function/class definitions are retrieved, per spec.
 
+## Phase 3
+
+### ModelClient protocol: one call shape, no sampling knobs
+`complete(system, messages, max_tokens, purpose)` → text + API-reported token
+counts. Deliberately no temperature parameter: current Anthropic models
+(Opus 4.7+) reject sampling parameters with HTTP 400, and reproducibility
+for repeated runs comes from the SQLite cache, not from sampling settings.
+Gemini pins temperature 0 internally; Ollama likewise. ``purpose`` is a
+telemetry label recorded in the ledger ("triage"/"review"/"judge").
+
+### Cache + ledger: one SQLite file, two tables
+Cache key is exactly SHA256(model + system + messages) per spec, serialized
+canonically (sorted JSON). Hits cost $0, skip the backend entirely, and are
+still written to the ledger. Every call row stores API-reported input/output
+tokens *and* the chars/4 estimate (decision #5) so `pra cost report` shows
+measured estimator drift per run instead of an asserted heuristic. Unknown
+models cost $0 with a loud warning rather than failing the run; prices carry
+a `prices_as_of` vintage (decision #4).
+
+### Engine: fail-closed triage, anchor validation, advisory severity
+Triage parse failures skip the hunk (counted, never silently reviewed at
+full price). Review comments must anchor to a line number that actually has
+a new-file line in the hunk — context lines are allowed as anchors so
+deletion-only hunks ("removed the null check") remain commentable; invented
+line numbers are dropped and counted. Unknown severities are coerced to
+"minor" instead of dropping the finding (severity is advisory; the comment
+text is the value). Confidence is gated per decision #3: no-context comments
+face the higher threshold, and every comment carries `has_context` for
+Phase 5's split metrics.
+
+### Lint dedup: best-effort, exact location match
+ruff + mypy run on the PR head workspace (`--ignore-missing-imports`, since
+the OSS repo's dependencies aren't installed); agent comments matching a
+linter finding's exact (file, line) are dropped. Missing executables degrade
+to "no findings" with a warning — a review run shouldn't die because a
+deploy environment lacks mypy. Tools are resolved from PATH or the running
+interpreter's bin directory (virtualenv installs).
+
+### Prompts: versioned package resources, not inline strings
+Four templates (triage/review × system/user) under
+`src/pr_review_agent/prompts/`, loaded via importlib.resources, rendered
+with string.Template (JSON braces stay literal). Static instructions sit in
+the system prompt and volatile hunk content in the user message, so backend
+prompt caches get a stable prefix. Phase 5's judge prompts join the same
+directory.
+
 ## Decisions approved for later phases (reviewed 2026-06-11)
 
 These were agreed before Phase 2 started; implement phases against them.

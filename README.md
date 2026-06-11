@@ -13,7 +13,7 @@ No agent frameworks — the agent loop is plain Python over raw HTTP/SDK calls.
 |-------|-------|-------|
 | 1 | Scaffold, GitHub ingestion, diff parsing, `pra fetch` | done |
 | 2 | Context retrieval (AST-based symbol resolution) | done |
-| 3 | Agent loop (triage → review, confidence gate, dedup) | planned |
+| 3 | Agent loop (triage → review, confidence gate, dedup) | done |
 | 4 | Posting + dry-run + idempotency | planned |
 | 5 | Eval harness (dataset, judge, report) | planned |
 
@@ -42,7 +42,15 @@ pra fetch owner/repo 123
 
 # Check out the PR head and print the symbol context the agent would retrieve
 pra context owner/repo 123
+
+# Summarize model spend per run (cache hits, tokens, cost, estimator drift)
+pra cost report
 ```
+
+Model backends need their keys in the environment: `GEMINI_API_KEY` for the
+default agent loop, `ANTHROPIC_API_KEY` for eval-judge/ceiling runs. The
+Ollama backend needs no key. Every model call goes through a SQLite cache —
+re-running an identical prompt is free and logged.
 
 `GITHUB_TOKEN` is optional for public repos but strongly recommended
 (unauthenticated requests are limited to 60/hour).
