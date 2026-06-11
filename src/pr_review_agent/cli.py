@@ -17,6 +17,7 @@ from pr_review_agent.diff.models import FileDiff, FileStatus
 from pr_review_agent.diff.parser import DiffParseError, parse_diff
 from pr_review_agent.github.client import GitHubClient, GitHubError
 from pr_review_agent.github.models import PullRequest
+from pr_review_agent.models.store import CallStore
 from pr_review_agent.workspace import WorkspaceError, pr_head_workspace
 
 app = typer.Typer(
@@ -24,6 +25,8 @@ app = typer.Typer(
     help="Autonomous GitHub PR review agent.",
     no_args_is_help=True,
 )
+cost_app = typer.Typer(help="Model spend reporting.", no_args_is_help=True)
+app.add_typer(cost_app, name="cost")
 console = Console()
 err_console = Console(stderr=True)
 
@@ -108,6 +111,65 @@ def context(
         raise typer.Exit(code=1) from exc
 
     _print_context(pr, pr_context, config)
+
+
+@cost_app.command("report")
+def cost_report(
+    db: Annotated[
+        Path | None,
+        typer.Option("--db", help="Path to the call database (default: models.db_path)."),
+    ] = None,
+    config_path: Annotated[
+        Path | None,
+        typer.Option("--config", help="Path to config.toml (default: ./config.toml)."),
+    ] = None,
+) -> None:
+    """Summarize model spend per run, including cache hits and estimate drift."""
+    try:
+        config = load_config(config_path)
+    except ConfigError as exc:
+        err_console.print(f"[red]config error:[/red] {escape(str(exc))}")
+        raise typer.Exit(code=1) from exc
+    db_path = db if db is not None else Path(config.models.db_path)
+    if not db_path.is_file():
+        err_console.print(f"[red]error:[/red] no call database at {escape(str(db_path))}")
+        raise typer.Exit(code=1)
+    with CallStore(db_path) as store:
+        summaries = store.run_summaries()
+    if not summaries:
+        console.print("No model calls recorded yet.")
+        return
+
+    table = Table(show_edge=False, pad_edge=False)
+    table.add_column("run", overflow="fold")
+    table.add_column("started")
+    table.add_column("calls", justify="right")
+    table.add_column("hits", justify="right")
+    table.add_column("in tok", justify="right")
+    table.add_column("out tok", justify="right")
+    table.add_column("cost USD", justify="right")
+    table.add_column("est drift", justify="right")
+    for summary in summaries:
+        drift = summary.estimate_drift
+        table.add_row(
+            escape(summary.run_id),
+            summary.started_at,
+            str(summary.calls),
+            str(summary.cache_hits),
+            str(summary.input_tokens),
+            str(summary.output_tokens),
+            f"{summary.cost_usd:.4f}",
+            "n/a" if drift is None else f"{drift:+.1%}",
+        )
+    console.print(table)
+    total_cost = sum(s.cost_usd for s in summaries)
+    total_calls = sum(s.calls for s in summaries)
+    total_hits = sum(s.cache_hits for s in summaries)
+    console.print(
+        f"\n{len(summaries)} run(s), {total_calls} call(s) ({total_hits} cache hit(s)), "
+        f"total [bold]${total_cost:.4f}[/bold] "
+        f"(prices as of {escape(config.models.prices_as_of)})"
+    )
 
 
 def _print_context(pr: PullRequest, pr_context: PRContext, config: AppConfig) -> None:
