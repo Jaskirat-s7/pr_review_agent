@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from pr_review_agent.context.models import SymbolDef, SymbolKind
+from pr_review_agent.estimate import estimate_tokens
 
 Definition = ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef
 
@@ -75,8 +76,3 @@ def extract_symbol(
         est_tokens=estimate_tokens(segment),
         reference_count=reference_count,
     )
-
-
-def estimate_tokens(text: str) -> int:
-    """Cheap token estimate (~4 chars/token); used only for budgeting."""
-    return max(1, len(text) // 4)
