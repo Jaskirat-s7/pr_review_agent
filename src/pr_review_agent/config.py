@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import tomllib
+from collections.abc import Mapping
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any, TypeVar
@@ -41,11 +42,55 @@ class ContextConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class ModelPricing:
+    """Per-million-token prices for one model."""
+
+    input_per_mtok: float = 0.0
+    output_per_mtok: float = 0.0
+
+
+# Defaults for the shipped backend models (see prices_as_of). Local models
+# are free. Override or extend via [models.pricing] in config.toml.
+DEFAULT_PRICING: Mapping[str, ModelPricing] = {
+    "gemini-2.5-flash": ModelPricing(input_per_mtok=0.30, output_per_mtok=2.50),
+    "claude-opus-4-8": ModelPricing(input_per_mtok=5.00, output_per_mtok=25.00),
+    "qwen2.5-coder:7b": ModelPricing(input_per_mtok=0.0, output_per_mtok=0.0),
+}
+
+
+@dataclass(frozen=True, slots=True)
+class ModelsConfig:
+    """Model backends, call database, and pricing."""
+
+    backend: str = "gemini"  # agent-loop backend: gemini | anthropic | ollama
+    db_path: str = "pra.sqlite3"
+    gemini_model: str = "gemini-2.5-flash"
+    anthropic_model: str = "claude-opus-4-8"
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_model: str = "qwen2.5-coder:7b"
+    prices_as_of: str = "2026-06"
+    pricing: Mapping[str, ModelPricing] = field(default_factory=lambda: dict(DEFAULT_PRICING))
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewConfig:
+    """Settings for the review engine."""
+
+    max_comments: int = 3
+    confidence_threshold: float = 0.6
+    # Comments on hunks with no retrieved context face a higher bar:
+    # hallucination risk is higher when the model only sees the hunk.
+    no_context_confidence_threshold: float = 0.8
+
+
+@dataclass(frozen=True, slots=True)
 class AppConfig:
     """Top-level application configuration."""
 
     github: GitHubConfig = field(default_factory=GitHubConfig)
     context: ContextConfig = field(default_factory=ContextConfig)
+    models: ModelsConfig = field(default_factory=ModelsConfig)
+    review: ReviewConfig = field(default_factory=ReviewConfig)
 
 
 def load_config(path: Path | None = None) -> AppConfig:
@@ -68,12 +113,24 @@ def load_config(path: Path | None = None) -> AppConfig:
     return AppConfig(
         github=_github_config(raw.get("github", {}), source=path),
         context=_context_config(raw.get("context", {}), source=path),
+        models=_models_config(raw.get("models", {}), source=path),
+        review=_review_config(raw.get("review", {}), source=path),
     )
 
 
 def github_token() -> str | None:
     """Return the GitHub token from the environment, if set and non-empty."""
     return os.environ.get("GITHUB_TOKEN") or None
+
+
+def gemini_api_key() -> str | None:
+    """Return the Gemini API key from the environment, if set and non-empty."""
+    return os.environ.get("GEMINI_API_KEY") or None
+
+
+def anthropic_api_key() -> str | None:
+    """Return the Anthropic API key from the environment, if set and non-empty."""
+    return os.environ.get("ANTHROPIC_API_KEY") or None
 
 
 def _github_config(raw: object, *, source: Path) -> GitHubConfig:
@@ -108,6 +165,67 @@ def _context_config(raw: object, *, source: Path) -> ContextConfig:
     defaults = ContextConfig()
     return ContextConfig(
         token_budget=_expect(table, "token_budget", int, defaults.token_budget, source, "context"),
+    )
+
+
+def _models_config(raw: object, *, source: Path) -> ModelsConfig:
+    table = _expect_table(raw, "models", source, ModelsConfig)
+    defaults = ModelsConfig()
+    section = "models"
+    pricing = dict(DEFAULT_PRICING)
+    pricing.update(_pricing_table(table.get("pricing", {}), source=source))
+    return ModelsConfig(
+        backend=_expect(table, "backend", str, defaults.backend, source, section),
+        db_path=_expect(table, "db_path", str, defaults.db_path, source, section),
+        gemini_model=_expect(table, "gemini_model", str, defaults.gemini_model, source, section),
+        anthropic_model=_expect(
+            table, "anthropic_model", str, defaults.anthropic_model, source, section
+        ),
+        ollama_base_url=_expect(
+            table, "ollama_base_url", str, defaults.ollama_base_url, source, section
+        ),
+        ollama_model=_expect(table, "ollama_model", str, defaults.ollama_model, source, section),
+        prices_as_of=_expect(table, "prices_as_of", str, defaults.prices_as_of, source, section),
+        pricing=pricing,
+    )
+
+
+def _pricing_table(raw: object, *, source: Path) -> dict[str, ModelPricing]:
+    if not isinstance(raw, dict):
+        raise ConfigError(f"[models.pricing] must be a table in {source}")
+    pricing: dict[str, ModelPricing] = {}
+    for model, entry in raw.items():
+        if not isinstance(entry, dict):
+            raise ConfigError(f"[models.pricing.{model}] must be a table in {source}")
+        unknown = sorted(set(entry) - {"input_per_mtok", "output_per_mtok"})
+        if unknown:
+            raise ConfigError(
+                f"unknown keys in [models.pricing.{model}] of {source}: {', '.join(unknown)}"
+            )
+        section = f"models.pricing.{model}"
+        pricing[str(model)] = ModelPricing(
+            input_per_mtok=_expect_number(entry, "input_per_mtok", 0.0, source, section),
+            output_per_mtok=_expect_number(entry, "output_per_mtok", 0.0, source, section),
+        )
+    return pricing
+
+
+def _review_config(raw: object, *, source: Path) -> ReviewConfig:
+    table = _expect_table(raw, "review", source, ReviewConfig)
+    defaults = ReviewConfig()
+    section = "review"
+    return ReviewConfig(
+        max_comments=_expect(table, "max_comments", int, defaults.max_comments, source, section),
+        confidence_threshold=_expect_number(
+            table, "confidence_threshold", defaults.confidence_threshold, source, section
+        ),
+        no_context_confidence_threshold=_expect_number(
+            table,
+            "no_context_confidence_threshold",
+            defaults.no_context_confidence_threshold,
+            source,
+            section,
+        ),
     )
 
 

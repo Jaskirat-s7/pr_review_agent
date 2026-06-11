@@ -24,3 +24,37 @@ max_sleep_seconds = 120.0
 # Hard cap on estimated tokens of retrieved symbol definitions per PR
 # (~4 chars/token estimate; most-referenced symbols are kept first).
 token_budget = 6000
+
+[models]
+# Agent-loop backend: gemini (default) | anthropic | ollama.
+# The anthropic backend is reserved for the eval judge and ceiling baselines.
+backend = "gemini"
+# SQLite DB holding the response cache and the per-call cost ledger.
+db_path = "pra.sqlite3"
+gemini_model = "gemini-2.5-flash"
+anthropic_model = "claude-opus-4-8"
+ollama_base_url = "http://localhost:11434"
+ollama_model = "qwen2.5-coder:7b"
+# Pricing vintage; cost reports state the prices they were computed with.
+prices_as_of = "2026-06"
+
+# USD per million tokens. Update together with prices_as_of.
+[models.pricing."gemini-2.5-flash"]
+input_per_mtok = 0.30
+output_per_mtok = 2.50
+
+[models.pricing."claude-opus-4-8"]
+input_per_mtok = 5.00
+output_per_mtok = 25.00
+
+[models.pricing."qwen2.5-coder:7b"]
+input_per_mtok = 0.0
+output_per_mtok = 0.0
+
+[review]
+# Maximum comments posted per PR; the highest-severity, highest-confidence
+# survivors win.
+max_comments = 3
+confidence_threshold = 0.6
+# Comments on hunks with no retrieved context face a higher bar.
+no_context_confidence_threshold = 0.8
