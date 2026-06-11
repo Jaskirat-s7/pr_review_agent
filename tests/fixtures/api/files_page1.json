@@ -1,0 +1,10 @@
+[
+  {
+    "filename": "src/app.py",
+    "status": "modified",
+    "additions": 3,
+    "deletions": 1,
+    "changes": 4,
+    "patch": "@@ -1,2 +1,3 @@\n import os\n+import sys\n x = 1"
+  }
+]

@@ -1,0 +1,15 @@
+{
+  "number": 123,
+  "title": "Add retry logic to fetcher",
+  "body": "Fixes #100",
+  "state": "open",
+  "merged": false,
+  "draft": false,
+  "html_url": "https://github.com/octo/widgets/pull/123",
+  "user": { "login": "octocat" },
+  "base": { "ref": "main", "sha": "aaa111aaa111aaa111aaa111aaa111aaa111aaa1" },
+  "head": { "ref": "feature/retry", "sha": "bbb222bbb222bbb222bbb222bbb222bbb222bbb2" },
+  "changed_files": 2,
+  "additions": 10,
+  "deletions": 3
+}
