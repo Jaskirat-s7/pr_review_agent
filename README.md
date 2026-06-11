@@ -19,10 +19,13 @@ No agent frameworks — the agent loop is plain Python over raw HTTP/SDK calls.
 
 ## Install
 
-Requires Python 3.11+.
+Requires Python 3.11 or 3.12 (both tested in CI; `.python-version` pins
+3.11). Create the venv with an explicit interpreter rather than `python3`,
+whose default version varies by machine:
 
 ```sh
-pip install -e ".[dev]"
+python3.11 -m venv .venv
+.venv/bin/pip install -e ".[dev]"
 ```
 
 ## Configuration
