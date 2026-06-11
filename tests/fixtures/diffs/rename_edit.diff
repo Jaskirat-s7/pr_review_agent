@@ -1,0 +1,11 @@
+diff --git a/utils/helpers.py b/utils/util_helpers.py
+similarity index 90%
+rename from utils/helpers.py
+rename to utils/util_helpers.py
+index 5555555..6666666 100644
+--- a/utils/helpers.py
++++ b/utils/util_helpers.py
+@@ -7,2 +7,2 @@ def greet(name):
+ def add(a, b):
+-    return a + b
++    return a + b  # noqa

@@ -1,0 +1,4 @@
+diff --git a/pkg/a.py b/pkg/b.py
+similarity index 100%
+rename from pkg/a.py
+rename to pkg/b.py

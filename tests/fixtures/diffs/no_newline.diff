@@ -1,0 +1,9 @@
+diff --git a/VERSION b/VERSION
+index 8888888..9999999 100644
+--- a/VERSION
++++ b/VERSION
+@@ -1 +1 @@
+-1.0.0
+\ No newline at end of file
++1.0.1
+\ No newline at end of file

@@ -1,0 +1,17 @@
+diff --git a/src/app.py b/src/app.py
+index 1111111..2222222 100644
+--- a/src/app.py
++++ b/src/app.py
+@@ -1,5 +1,6 @@
+ import os
+-import sys
++import sys
++import json
+
+ def main() -> None:
+     pass
+@@ -20,3 +21,3 @@ def helper():
+     a = 1
+-    b = 2
++    b = 3
+     return a

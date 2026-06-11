@@ -1,0 +1,41 @@
+diff --git a/src/app.py b/src/app.py
+index 1111111..2222222 100644
+--- a/src/app.py
++++ b/src/app.py
+@@ -1,5 +1,6 @@
+ import os
+-import sys
++import sys
++import json
+
+ def main() -> None:
+     pass
+@@ -20,3 +21,3 @@ def helper():
+     a = 1
+-    b = 2
++    b = 3
+     return a
+diff --git a/docs/notes.md b/docs/notes.md
+new file mode 100644
+index 0000000..3333333
+--- /dev/null
++++ b/docs/notes.md
+@@ -0,0 +1,2 @@
++hello
++world
+diff --git a/old_module.py b/old_module.py
+deleted file mode 100644
+index 4444444..0000000
+--- a/old_module.py
++++ /dev/null
+@@ -1,2 +0,0 @@
+-x = 1
+-y = 2
+diff --git a/pkg/a.py b/pkg/b.py
+similarity index 100%
+rename from pkg/a.py
+rename to pkg/b.py
+diff --git a/assets/logo.png b/assets/logo.png
+new file mode 100644
+index 0000000..7777777
+Binary files /dev/null and b/assets/logo.png differ
