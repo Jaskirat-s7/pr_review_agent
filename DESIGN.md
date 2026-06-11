@@ -65,6 +65,18 @@ imports resolved against the containing package). Stdlib modules
 (`sys.stdlib_module_names`) are silently skipped; anything else that can't be
 resolved to a repo file is reported as unresolved rather than dropped.
 
+### What counts as a reference (verified, pinned by tests)
+Annotation position counts: `def handle(req: Request) -> Response:` on an
+added line references `Request`/`Response`, because annotations are ordinary
+Load-context expression nodes in the AST. `from __future__ import
+annotations` changes nothing here — PEP 563 defers runtime *evaluation*, but
+the parsed AST still contains real `Name`/`Attribute` nodes. Decorators count
+on their own lines (`@router.get(...)` references `router.get`). **Known
+gap:** explicitly quoted string annotations (`def f(x: "Request")`) parse as
+`Constant` strings and are not re-parsed into expressions; rare in 3.11+
+code, where PEP 563 makes quoting unnecessary. Pinned by a test so a future
+fix (or regression) is visible.
+
 ### Budget: ~4 chars/token estimate, most-referenced first
 No tokenizer dependency — the budget is a guardrail, not an invoice, and a
 chars/4 estimate is backend-neutral across Gemini/Anthropic/Ollama. Ranking
@@ -100,3 +112,8 @@ These were agreed before Phase 2 started; implement phases against them.
 4. **Model pricing (Phase 3+).** Per-model $/token prices live in
    `config.toml` with a `prices_as_of = "YYYY-MM"` field; cost reports state
    the pricing vintage they were computed with.
+5. **Token-estimator validation (Phase 3).** Every model call logs the
+   chars/4 *estimate* alongside the API-reported actual input tokens, both
+   stored in the SQLite call log, so the divisor can be validated or
+   corrected with data instead of asserted ("ran ~N% hot/cold" must be a
+   measured claim).

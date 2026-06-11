@@ -73,6 +73,33 @@ def test_chain_behind_call_still_counts_inner_names() -> None:
     assert counts == {"get_client": 1, "payload": 1}
 
 
+def test_annotations_count_as_references() -> None:
+    tree = ast.parse("def handle(req: Request) -> Response:\n    pass\n")
+    assert referenced_dotted_names(tree, {1}) == {"Request": 1, "Response": 1}
+
+
+def test_pep563_future_import_does_not_hide_annotations() -> None:
+    # PEP 563 defers runtime *evaluation*; the AST still holds real Name nodes.
+    source = (
+        "from __future__ import annotations\n\ndef handle(req: Request) -> Response:\n    pass\n"
+    )
+    tree = ast.parse(source)
+    assert referenced_dotted_names(tree, {3}) == {"Request": 1, "Response": 1}
+
+
+def test_quoted_string_annotations_are_a_known_gap() -> None:
+    # Explicitly quoted annotations parse as Constant strings; we do not parse
+    # them back into expressions. Pinned here so a behavior change is noticed.
+    tree = ast.parse('def handle(req: "Request") -> "Response":\n    pass\n')
+    assert referenced_dotted_names(tree, {1}) == {}
+
+
+def test_decorators_count_on_their_own_lines() -> None:
+    tree = ast.parse("@router.get('/items')\n@cache\ndef handler():\n    pass\n")
+    assert referenced_dotted_names(tree, {1}) == {"router.get": 1}
+    assert referenced_dotted_names(tree, {1, 2}) == {"router.get": 1, "cache": 1}
+
+
 def test_resolve_usage_through_import_forms() -> None:
     imports = [
         ImportedName("greet", "helpers", "greet", False),
