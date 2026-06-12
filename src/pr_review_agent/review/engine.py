@@ -69,6 +69,7 @@ class ReviewEngine:
 
         drafts: list[AgentComment] = []
         dropped_invalid_line = 0
+        dropped_malformed_item = 0
         review_failures = 0
         for file_diff, hunk, category in flagged:
             result = self._review_hunk(
@@ -77,9 +78,10 @@ class ReviewEngine:
             if result is None:
                 review_failures += 1
                 continue
-            comments, invalid = result
+            comments, invalid, malformed = result
             drafts.extend(comments)
             dropped_invalid_line += invalid
+            dropped_malformed_item += malformed
 
         kept: list[AgentComment] = []
         dropped_low_confidence = 0
@@ -112,6 +114,7 @@ class ReviewEngine:
             drafts_generated=len(drafts),
             dropped_low_confidence=dropped_low_confidence,
             dropped_invalid_line=dropped_invalid_line,
+            dropped_malformed_item=dropped_malformed_item,
             dropped_lint_duplicate=dropped_lint_duplicate,
             dropped_over_cap=dropped_over_cap,
             triage_failures=triage_failures,
@@ -152,7 +155,7 @@ class ReviewEngine:
         hunk: Hunk,
         category: str,
         file_context: FileContext | None,
-    ) -> tuple[list[AgentComment], int] | None:
+    ) -> tuple[list[AgentComment], int, int] | None:
         has_context = file_context is not None and bool(file_context.symbols)
         user = self._review_user.substitute(
             file_path=file_diff.path,
@@ -180,15 +183,20 @@ class ReviewEngine:
         anchorable = {line.new_lineno for line in hunk.lines if line.new_lineno is not None}
         comments: list[AgentComment] = []
         invalid_lines = 0
+        malformed_items = 0
         for item in payload:
             comment = _comment_from_item(item, file_diff.path, category, has_context)
             if comment is None:
+                # Unusable element in an otherwise-valid array. Counted: in
+                # eval, a silent drop is indistinguishable from "found nothing".
+                malformed_items += 1
+                logger.warning("malformed review item for %s: %r", file_diff.path, item)
                 continue
             if comment.line not in anchorable:
                 invalid_lines += 1
                 continue
             comments.append(comment)
-        return comments, invalid_lines
+        return comments, invalid_lines, malformed_items
 
 
 def render_hunk(hunk: Hunk) -> str:

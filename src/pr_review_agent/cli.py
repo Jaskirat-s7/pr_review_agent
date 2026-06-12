@@ -264,6 +264,7 @@ def _print_review(
         f"{stats.drafts_generated} draft(s); dropped: "
         f"{stats.dropped_low_confidence} low-confidence, "
         f"{stats.dropped_invalid_line} bad-anchor, "
+        f"{stats.dropped_malformed_item} malformed, "
         f"{stats.dropped_lint_duplicate} lint-duplicate, "
         f"{stats.dropped_over_cap} over-cap; "
         f"{stats.triage_failures + stats.review_failures} model failure(s)"

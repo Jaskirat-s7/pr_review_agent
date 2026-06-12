@@ -107,6 +107,29 @@ measured estimator drift per run instead of an asserted heuristic. Unknown
 models cost $0 with a loud warning rather than failing the run; prices carry
 a `prices_as_of` vintage (decision #4).
 
+### Confidence thresholds are unvalidated priors, by design
+0.6 (with context) / 0.8 (without) live in `[review]`, not in code. The
+*values* are arbitrary priors; the *ordering* is the deliberate part
+(no-context comments face a higher bar, decision #3). They exist so Phase 5
+has a knob to sweep: the judge's match/false-positive labels per confidence
+band are exactly the data needed to tune them, and the eval report should
+make that sweep cheap. Until then, no precision/recall claim is attached to
+these numbers.
+
+### Malformed model output: no silent drops, no naive retry
+Three failure layers, all visible: (1) repair-lite parsing tolerates code
+fences and prose-wrapped JSON; (2) a response that still isn't valid JSON
+of the right shape fails the whole hunk and increments
+`triage_failures`/`review_failures`; (3) an unusable element inside a valid
+array increments `dropped_malformed_item`. In eval, a silent drop is
+indistinguishable from "the agent found nothing", which corrupts recall —
+so every drop has a counter, and Phase 5 can exclude or flag PRs with
+nonzero failure counts instead of scoring them as misses. There is
+deliberately no retry: an identical re-prompt would hit the response cache
+and replay the same malformed text. If Phase 5 shows a material
+parse-failure rate, the fix is a cache-bypassing retry with a stricter
+re-prompt — recorded as the known next step, not implemented speculatively.
+
 ### Engine: fail-closed triage, anchor validation, advisory severity
 Triage parse failures skip the hunk (counted, never silently reviewed at
 full price). Review comments must anchor to a line number that actually has

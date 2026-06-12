@@ -213,6 +213,24 @@ def test_code_fenced_json_is_parsed() -> None:
     assert len(result.comments) == 1
 
 
+def test_malformed_items_in_valid_array_are_counted_not_silent() -> None:
+    # The array parses, but two elements are unusable. In Phase 5 a silent
+    # drop would look identical to "the agent found nothing".
+    review = json.dumps(
+        [
+            {"line": 11, "severity": "major", "confidence": 0.9, "comment": "real finding"},
+            "just a string, not an object",
+            {"line": 12, "severity": "major", "confidence": 0.9},  # missing comment text
+        ]
+    )
+    client = ScriptedClient(triage=[triage_yes(), triage_no()], review=[review])
+    result = engine(client).review(parse_diff(DIFF), context_with_symbols())
+    (comment,) = result.comments
+    assert comment.line == 11
+    assert result.stats.dropped_malformed_item == 2
+    assert result.stats.review_failures == 0  # the response itself was fine
+
+
 def test_unknown_severity_is_coerced_to_minor() -> None:
     client = ScriptedClient(
         triage=[triage_yes(), triage_no()],

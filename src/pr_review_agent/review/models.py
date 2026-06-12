@@ -39,10 +39,11 @@ class ReviewStats:
     drafts_generated: int = 0
     dropped_low_confidence: int = 0
     dropped_invalid_line: int = 0
+    dropped_malformed_item: int = 0  # valid JSON array, unusable element
     dropped_lint_duplicate: int = 0
     dropped_over_cap: int = 0
-    triage_failures: int = 0
-    review_failures: int = 0
+    triage_failures: int = 0  # whole triage response unparseable / call failed
+    review_failures: int = 0  # whole review response unparseable / call failed
 
 
 @dataclass(frozen=True, slots=True)
