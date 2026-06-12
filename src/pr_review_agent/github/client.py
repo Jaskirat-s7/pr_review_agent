@@ -14,14 +14,20 @@ from __future__ import annotations
 import contextlib
 import logging
 import time
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from types import TracebackType
 from typing import Any, Self, cast
 
 import httpx
 
 from pr_review_agent.config import GitHubConfig
-from pr_review_agent.github.models import PRFile, PullRequest, ReviewComment
+from pr_review_agent.github.models import (
+    PRFile,
+    PullRequest,
+    Review,
+    ReviewComment,
+    ReviewCommentDraft,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +127,55 @@ class GitHubClient:
         path = f"/repos/{_validate_repo(repo)}/pulls/{number}/comments"
         return [ReviewComment.from_api(item) for item in self._paginate(path)]
 
+    def list_reviews(self, repo: str, number: int) -> list[Review]:
+        """Fetch all reviews on a pull request (for idempotency checks)."""
+        path = f"/repos/{_validate_repo(repo)}/pulls/{number}/reviews"
+        return [Review.from_api(item) for item in self._paginate(path)]
+
+    def get_authenticated_user(self) -> str:
+        """Return the login of the token's identity (the bot account)."""
+        response = self._request("GET", "/user")
+        login = _json_object(response).get("login")
+        if not isinstance(login, str) or not login:
+            raise GitHubAPIError(
+                "could not determine the authenticated user",
+                status_code=response.status_code,
+                url=str(response.request.url),
+            )
+        return login
+
+    def create_review(
+        self,
+        repo: str,
+        number: int,
+        *,
+        commit_id: str,
+        body: str,
+        comments: Sequence[ReviewCommentDraft],
+    ) -> int:
+        """Post a single PR review with inline comments; returns the review id.
+
+        Not retried on 5xx: a create may have succeeded server-side even when
+        the response was lost, and a double-posted review is worse than a
+        failed run.
+        """
+        payload = {
+            "commit_id": commit_id,
+            "body": body,
+            "event": "COMMENT",
+            "comments": [
+                {"path": c.path, "line": c.line, "side": "RIGHT", "body": c.body} for c in comments
+            ],
+        }
+        response = self._request(
+            "POST",
+            f"/repos/{_validate_repo(repo)}/pulls/{number}/reviews",
+            json=payload,
+            idempotent=False,
+        )
+        review_id = _json_object(response).get("id")
+        return review_id if isinstance(review_id, int) else 0
+
     # -- internals ----------------------------------------------------------
 
     def _paginate(self, path: str) -> Iterator[dict[str, Any]]:
@@ -154,14 +209,18 @@ class GitHubClient:
         *,
         accept: str = _ACCEPT_JSON,
         params: Mapping[str, str] | None = None,
+        json: Any | None = None,
+        idempotent: bool = True,
     ) -> httpx.Response:
         self._wait_for_rate_limit_budget()
         for attempt in range(self._config.max_retries + 1):
-            response = self._client.request(method, url, params=params, headers={"Accept": accept})
+            response = self._client.request(
+                method, url, params=params, json=json, headers={"Accept": accept}
+            )
             self._record_rate_limit(response)
             if response.is_success:
                 return response
-            if attempt < self._config.max_retries and self._is_retryable(response):
+            if attempt < self._config.max_retries and self._is_retryable(response, idempotent):
                 delay = self._retry_delay(response, attempt)
                 logger.warning(
                     "GitHub request failed with HTTP %d; retrying in %.1fs (attempt %d/%d)",
@@ -215,10 +274,15 @@ class GitHubClient:
             with contextlib.suppress(ValueError):
                 self._rate_reset = float(reset)
 
-    def _is_retryable(self, response: httpx.Response) -> bool:
-        if response.status_code in _RETRYABLE_STATUS:
+    def _is_retryable(self, response: httpx.Response, idempotent: bool) -> bool:
+        # Rate-limit rejections (429 / 403) are always safe to retry: the
+        # request was refused, not executed. 5xx is ambiguous — the request
+        # may have been applied — so only idempotent requests retry on it.
+        if response.status_code == 429:
             return True
-        return response.status_code == 403 and self._looks_rate_limited(response)
+        if response.status_code == 403 and self._looks_rate_limited(response):
+            return True
+        return idempotent and response.status_code in _RETRYABLE_STATUS
 
     @staticmethod
     def _looks_rate_limited(response: httpx.Response) -> bool:

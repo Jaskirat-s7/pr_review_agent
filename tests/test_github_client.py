@@ -205,6 +205,99 @@ def test_retry_after_header_is_honored() -> None:
     assert sleeps == [7.0]
 
 
+def test_list_reviews_parses_author_and_body() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/repos/octo/widgets/pulls/123/reviews"
+        return httpx.Response(200, text=load_fixture("api", "reviews.json"))
+
+    client, _ = make_client(handler)
+    with client:
+        reviews = client.list_reviews("octo/widgets", 123)
+    assert [r.author for r in reviews] == ["alice", "pra-bot"]
+    assert "pr-review-agent:octo/widgets#123@" in reviews[1].body
+
+
+def test_get_authenticated_user() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/user"
+        return httpx.Response(200, json={"login": "pra-bot", "id": 99})
+
+    client, _ = make_client(handler)
+    with client:
+        assert client.get_authenticated_user() == "pra-bot"
+
+
+def test_create_review_posts_single_review_payload() -> None:
+    import json as jsonlib
+
+    from pr_review_agent.github.models import ReviewCommentDraft
+
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/repos/octo/widgets/pulls/123/reviews"
+        captured.update(jsonlib.loads(request.content))
+        return httpx.Response(200, json={"id": 555})
+
+    client, _ = make_client(handler)
+    with client:
+        review_id = client.create_review(
+            "octo/widgets",
+            123,
+            commit_id="bbb222",
+            body="Automated review\n\n<!-- marker -->",
+            comments=[ReviewCommentDraft(path="app.py", line=11, body="KeyError risk.")],
+        )
+    assert review_id == 555
+    assert captured["event"] == "COMMENT"
+    assert captured["commit_id"] == "bbb222"
+    assert captured["comments"] == [
+        {"path": "app.py", "line": 11, "side": "RIGHT", "body": "KeyError risk."}
+    ]
+
+
+def test_create_review_is_not_retried_on_server_error() -> None:
+    from pr_review_agent.github.models import ReviewCommentDraft
+
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(502, text="bad gateway")
+
+    client, sleeps = make_client(handler)
+    with client, pytest.raises(GitHubAPIError):
+        client.create_review(
+            "octo/widgets",
+            123,
+            commit_id="bbb222",
+            body="x",
+            comments=[ReviewCommentDraft(path="a.py", line=1, body="b")],
+        )
+    assert calls == 1  # a lost 502 might still have posted; never blind-retry
+    assert sleeps == []
+
+
+def test_create_review_still_retries_rate_limit_rejections() -> None:
+
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(429, text="slow down", headers={"Retry-After": "3"})
+        return httpx.Response(200, json={"id": 7})
+
+    client, sleeps = make_client(handler)
+    with client:
+        review_id = client.create_review("octo/widgets", 123, commit_id="c", body="x", comments=[])
+    assert review_id == 7
+    assert sleeps == [3.0]  # 429 means rejected, so the retry is safe
+
+
 @pytest.mark.parametrize("bad_repo", ["plainname", "owner/", "/repo", "a/b/c", ""])
 def test_invalid_repo_is_rejected(bad_repo: str) -> None:
     def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover

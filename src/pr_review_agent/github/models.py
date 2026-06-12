@@ -121,6 +121,39 @@ class ReviewComment:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class Review:
+    """A submitted PR review (top-level, may carry inline comments)."""
+
+    review_id: int
+    author: str
+    body: str
+    state: str
+    commit_id: str
+
+    @classmethod
+    def from_api(cls, data: Mapping[str, Any]) -> Review:
+        review_id = data.get("id")
+        if not isinstance(review_id, int):
+            raise ValueError("review payload is missing 'id'")
+        return cls(
+            review_id=review_id,
+            author=_str(_table(data, "user"), "login"),
+            body=_str(data, "body"),
+            state=_str(data, "state"),
+            commit_id=_str(data, "commit_id"),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewCommentDraft:
+    """An inline comment to be posted (new-file side)."""
+
+    path: str
+    line: int
+    body: str
+
+
 def _table(data: Mapping[str, Any], key: str) -> Mapping[str, Any]:
     value = data.get(key)
     return value if isinstance(value, Mapping) else {}
