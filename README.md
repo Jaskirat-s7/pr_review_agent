@@ -15,7 +15,7 @@ No agent frameworks — the agent loop is plain Python over raw HTTP/SDK calls.
 | 2 | Context retrieval (AST-based symbol resolution) | done |
 | 3 | Agent loop (triage → review, confidence gate, dedup) | done |
 | 4 | Posting + dry-run + idempotency | done |
-| 5 | Eval harness (dataset, judge, report) | planned |
+| 5 | Eval harness (dataset, judge, report) | in progress — `eval run` pending |
 
 ## Install
 
@@ -51,6 +51,11 @@ pra review owner/repo 123 --post
 
 # Summarize model spend per run (cache hits, tokens, cost, estimator drift)
 pra cost report
+
+# Eval harness: collect human-reviewed PRs, judge agent output, report
+pra eval build-dataset owner/repo --since 2026-01-01 --out dataset/
+pra eval judge dataset/ --backend gemini    # Anthropic judge; needs run results
+pra eval report dataset/
 ```
 
 Model backends need their keys in the environment: `GEMINI_API_KEY` for the

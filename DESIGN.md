@@ -180,6 +180,39 @@ for idempotent requests; rate-limit rejections (429 / 403-limit) retry for
 everything since rejection means not-executed. Comment anchors post with
 `side: "RIGHT"` to match the engine's new-file line numbers.
 
+## Phase 5 (dataset builder, judge, report; `eval run` deferred)
+
+### Pre-review reconstruction (decision #1 implemented)
+A case's diff is reconstructed at the commit the *first* substantive
+reviewer saw — the earliest review comment's `original_commit_id`, diffed
+via the compare API. When that commit is gone (force-push then GC), the
+case falls back to the final merged diff with `reconstructed: false`.
+Every case records the flag; the report splits recall by it and labels the
+fallback subset as contaminated (the merged diff may already incorporate
+fixes the human comments prompted). "Substantive" = top-level (not a
+reply), not bot-authored, ≥10 characters — replies are discussion, not
+independent findings.
+
+### Judge: per-comment questions, error is a verdict
+One judge call per human comment (match/partial/miss + matched agent
+index) and one per unmatched agent comment (plausible-extra vs
+false-positive), all through the Anthropic backend with purpose="judge" —
+cached and cost-tracked like every other call. Unparseable judge output is
+verdict "error", never coerced to miss; out-of-range matched indices are
+discarded but the verdict survives. Agent runs with zero comments are
+scored miss without spending judge calls. The 20% CSV sample is seeded
+(default 42) so a re-export reproduces the same rows.
+
+### Report: recall = match + 0.5·partial, errors excluded
+The 0.5 partial weight is stated in the report legend, not buried in code.
+Judge errors are excluded from denominators and get their own row — an
+unjudged comment must never silently count as a miss. The headline table
+grows an "(ceiling)" column when anthropic-backend judgments exist;
+contamination and context splits (decisions #1 and #3) are standing
+sections. `pra eval run` is the remaining Phase 5 piece, deliberately
+deferred: schemas for run results are already fixed, so the runner slots
+in without reshaping the judge or report.
+
 ## Decisions approved for later phases (reviewed 2026-06-11)
 
 These were agreed before Phase 2 started; implement phases against them.

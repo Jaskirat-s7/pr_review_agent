@@ -16,6 +16,19 @@ from pr_review_agent.context.models import PRContext
 from pr_review_agent.context.retriever import ContextRetriever
 from pr_review_agent.diff.models import FileDiff, FileStatus
 from pr_review_agent.diff.parser import DiffParseError, parse_diff
+from pr_review_agent.evals.dataset import build_dataset
+from pr_review_agent.evals.judge import EvalJudge, export_sample
+from pr_review_agent.evals.report import generate_report
+from pr_review_agent.evals.schema import (
+    CASES_FILE,
+    EvalDataError,
+    judgments_path,
+    load_cases,
+    load_runs,
+    runs_path,
+    sample_path,
+    write_jsonl,
+)
 from pr_review_agent.github.client import GitHubClient, GitHubError
 from pr_review_agent.github.models import PullRequest
 from pr_review_agent.models.base import ModelError
@@ -39,6 +52,11 @@ app = typer.Typer(
 )
 cost_app = typer.Typer(help="Model spend reporting.", no_args_is_help=True)
 app.add_typer(cost_app, name="cost")
+eval_app = typer.Typer(
+    help="Eval harness: dataset of human-reviewed PRs, judge, report.",
+    no_args_is_help=True,
+)
+app.add_typer(eval_app, name="eval")
 console = Console()
 err_console = Console(stderr=True)
 
@@ -274,6 +292,131 @@ def _print_review(
             f"{summary.calls} model call(s), {summary.cache_hits} cache hit(s), "
             f"~${summary.cost_usd:.4f}"
         )
+
+
+@eval_app.command("build-dataset")
+def eval_build_dataset(
+    repo: Annotated[str, typer.Argument(help="Repository in owner/name form.")],
+    since: Annotated[str, typer.Option("--since", help="Earliest merge date, YYYY-MM-DD.")],
+    out: Annotated[Path, typer.Option("--out", help="Dataset output directory.")],
+    min_comments: Annotated[
+        int,
+        typer.Option("--min-comments", help="Minimum substantive human review comments."),
+    ] = 2,
+    max_cases: Annotated[
+        int, typer.Option("--max-cases", help="Stop after collecting this many cases.")
+    ] = 25,
+    config_path: Annotated[
+        Path | None,
+        typer.Option("--config", help="Path to config.toml (default: ./config.toml)."),
+    ] = None,
+) -> None:
+    """Collect merged, substantively reviewed PRs into JSONL eval cases."""
+    try:
+        config = load_config(config_path)
+    except ConfigError as exc:
+        err_console.print(f"[red]config error:[/red] {escape(str(exc))}")
+        raise typer.Exit(code=1) from exc
+    token = github_token()
+    if token is None:
+        err_console.print(
+            "[yellow]GITHUB_TOKEN not set; using unauthenticated API (60 requests/hour).[/yellow]"
+        )
+    try:
+        with GitHubClient(token, config=config.github) as client:
+            stats = build_dataset(
+                client,
+                repo,
+                since=since,
+                min_comments=min_comments,
+                out_dir=out,
+                max_cases=max_cases,
+            )
+    except (GitHubError, ValueError) as exc:
+        err_console.print(f"[red]error:[/red] {escape(str(exc))}")
+        raise typer.Exit(code=1) from exc
+    console.print(
+        f"Selected {stats.selected} case(s) from {stats.scanned} scanned PR(s): "
+        f"{stats.reconstructed} reconstructed, {stats.fallback_final_diff} final-diff "
+        f"fallback(s); skipped {stats.skipped_few_comments} with too few substantive "
+        f"comments, {stats.skipped_unmerged} unmerged/out-of-window."
+    )
+    console.print(f"Wrote {escape(str(out / CASES_FILE))}")
+
+
+@eval_app.command("judge")
+def eval_judge(
+    dataset_dir: Annotated[Path, typer.Argument(help="Dataset directory.")],
+    backend: Annotated[
+        str,
+        typer.Option("--backend", help="Which backend's run results to judge."),
+    ] = "gemini",
+    sample_fraction: Annotated[
+        float,
+        typer.Option("--sample-fraction", help="Fraction of judgments exported to CSV."),
+    ] = 0.2,
+    seed: Annotated[
+        int, typer.Option("--seed", help="Sampling seed (reproducible CSV sample).")
+    ] = 42,
+    config_path: Annotated[
+        Path | None,
+        typer.Option("--config", help="Path to config.toml (default: ./config.toml)."),
+    ] = None,
+) -> None:
+    """Judge a backend's run results against the human comments (Anthropic judge)."""
+    try:
+        config = load_config(config_path)
+        cases = load_cases(dataset_dir / CASES_FILE)
+        run_file = runs_path(dataset_dir, backend)
+        if not run_file.is_file():
+            raise EvalDataError(
+                f"no run results at {run_file}; execute the eval run step for "
+                f"backend {backend!r} first"
+            )
+        runs = load_runs(run_file)
+        judge_model = build_model_client("anthropic", config.models)
+        timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        with CallStore(Path(config.models.db_path)) as store:
+            caching = CachingModelClient(
+                judge_model,
+                store,
+                run_id=f"judge:{backend} {timestamp}",
+                pricing=config.models.pricing,
+            )
+            judgments = EvalJudge(caching).judge_all(cases, runs)
+    except (ConfigError, EvalDataError, ModelError) as exc:
+        err_console.print(f"[red]error:[/red] {escape(str(exc))}")
+        raise typer.Exit(code=1) from exc
+    count = write_jsonl(judgments_path(dataset_dir, backend), judgments)
+    sampled = export_sample(
+        judgments,
+        cases,
+        runs,
+        sample_path(dataset_dir, backend),
+        fraction=sample_fraction,
+        seed=seed,
+    )
+    console.print(
+        f"Judged {count} case(s) for backend {escape(backend)}; "
+        f"exported {sampled} judgment(s) to "
+        f"{escape(str(sample_path(dataset_dir, backend)))} for manual validation."
+    )
+
+
+@eval_app.command("report")
+def eval_report(
+    dataset_dir: Annotated[Path, typer.Argument(help="Dataset directory.")],
+) -> None:
+    """Render the markdown eval report and write it to <dataset>/report.md."""
+    try:
+        markdown = generate_report(dataset_dir)
+    except EvalDataError as exc:
+        err_console.print(f"[red]error:[/red] {escape(str(exc))}")
+        raise typer.Exit(code=1) from exc
+    report_file = dataset_dir / "report.md"
+    report_file.write_text(markdown, encoding="utf-8")
+    typer.echo(markdown)
+    err_console.print(f"[dim]written to {escape(str(report_file))}[/dim]")
 
 
 @cost_app.command("report")
