@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
 
@@ -17,7 +18,18 @@ from pr_review_agent.diff.models import FileDiff, FileStatus
 from pr_review_agent.diff.parser import DiffParseError, parse_diff
 from pr_review_agent.github.client import GitHubClient, GitHubError
 from pr_review_agent.github.models import PullRequest
-from pr_review_agent.models.store import CallStore
+from pr_review_agent.models.base import ModelError
+from pr_review_agent.models.factory import build_model_client
+from pr_review_agent.models.store import CachingModelClient, CallStore, RunSummary
+from pr_review_agent.review.engine import ReviewEngine
+from pr_review_agent.review.lint import RuffMypyRunner
+from pr_review_agent.review.models import ReviewResult
+from pr_review_agent.review.post import (
+    find_existing_review,
+    review_body,
+    run_key,
+    to_draft_comments,
+)
 from pr_review_agent.workspace import WorkspaceError, pr_head_workspace
 
 app = typer.Typer(
@@ -111,6 +123,156 @@ def context(
         raise typer.Exit(code=1) from exc
 
     _print_context(pr, pr_context, config)
+
+
+@app.command()
+def review(
+    repo: Annotated[str, typer.Argument(help="Repository in owner/name form.")],
+    number: Annotated[int, typer.Argument(min=1, help="Pull request number.")],
+    post: Annotated[
+        bool,
+        typer.Option("--post", help="Actually post the review. Default is a dry run."),
+    ] = False,
+    backend: Annotated[
+        str | None,
+        typer.Option("--backend", help="Override the [models] backend (gemini|anthropic|ollama)."),
+    ] = None,
+    config_path: Annotated[
+        Path | None,
+        typer.Option("--config", help="Path to config.toml (default: ./config.toml)."),
+    ] = None,
+) -> None:
+    """Review a pull request. Dry-run by default: prints comments, posts nothing."""
+    try:
+        config = load_config(config_path)
+    except ConfigError as exc:
+        err_console.print(f"[red]config error:[/red] {escape(str(exc))}")
+        raise typer.Exit(code=1) from exc
+
+    token = github_token()
+    if post and token is None:
+        err_console.print("[red]error:[/red] --post requires GITHUB_TOKEN to be set.")
+        raise typer.Exit(code=1)
+    if token is None:
+        err_console.print(
+            "[yellow]GITHUB_TOKEN not set; using unauthenticated API (60 requests/hour).[/yellow]"
+        )
+
+    try:
+        with GitHubClient(token, config=config.github) as client:
+            pr = client.get_pr(repo, number)
+            key = run_key(repo, number, pr.head_sha)
+            if post:
+                bot_login = client.get_authenticated_user()
+                existing = find_existing_review(client.list_reviews(repo, number), key, bot_login)
+                if existing is not None:
+                    console.print(
+                        f"Review #{existing.review_id} already posted for {escape(key)}; "
+                        "nothing to do."
+                    )
+                    return
+            diff_text = client.get_pr_diff(repo, number)
+            files = parse_diff(diff_text)
+            result, summary = _run_engine(config, repo, number, pr, files, token, backend)
+            if not post:
+                _print_review(pr, result, summary, posted=False)
+                return
+            if not result.comments:
+                console.print(
+                    "No comments above the bar; not posting an empty review. "
+                    "(A re-run on this head will re-evaluate from cache.)"
+                )
+                return
+            review_id = client.create_review(
+                repo,
+                number,
+                commit_id=pr.head_sha,
+                body=review_body(key, result.comments),
+                comments=to_draft_comments(result.comments),
+            )
+            _print_review(pr, result, summary, posted=True, review_id=review_id)
+    except (
+        GitHubError,
+        WorkspaceError,
+        DiffParseError,
+        ModelError,
+        ConfigError,
+        ValueError,
+    ) as exc:
+        err_console.print(f"[red]error:[/red] {escape(str(exc))}")
+        raise typer.Exit(code=1) from exc
+
+
+def _run_engine(
+    config: AppConfig,
+    repo: str,
+    number: int,
+    pr: PullRequest,
+    files: list[FileDiff],
+    token: str | None,
+    backend: str | None,
+) -> tuple[ReviewResult, RunSummary | None]:
+    clone_url = f"{config.github.clone_base_url.rstrip('/')}/{repo}.git"
+    ledger_run_id = (
+        f"{repo}#{number}@{pr.head_sha[:8]} {datetime.now(UTC).strftime('%Y-%m-%dT%H:%M:%SZ')}"
+    )
+    model_client = build_model_client(backend or config.models.backend, config.models)
+    with pr_head_workspace(clone_url, number, pr.head_sha, token=token) as workdir:
+        retriever = ContextRetriever(workdir, token_budget=config.context.token_budget)
+        pr_context = retriever.retrieve(files)
+        with CallStore(Path(config.models.db_path)) as store:
+            caching = CachingModelClient(
+                model_client, store, run_id=ledger_run_id, pricing=config.models.pricing
+            )
+            engine = ReviewEngine(caching, config=config.review, lint_runner=RuffMypyRunner())
+            result = engine.review(files, pr_context, repo_root=workdir)
+            summary = next((s for s in store.run_summaries() if s.run_id == ledger_run_id), None)
+    return result, summary
+
+
+def _print_review(
+    pr: PullRequest,
+    result: ReviewResult,
+    summary: RunSummary | None,
+    *,
+    posted: bool,
+    review_id: int | None = None,
+) -> None:
+    mode = f"posted review #{review_id}" if posted else "dry run — nothing posted"
+    console.print(f"[bold]PR #{pr.number}: {escape(pr.title)}[/bold] — {mode}\n")
+    if result.comments:
+        table = Table(show_edge=False, pad_edge=False)
+        table.add_column("location")
+        table.add_column("sev")
+        table.add_column("conf", justify="right")
+        table.add_column("ctx")
+        table.add_column("comment", overflow="fold")
+        for comment in result.comments:
+            table.add_row(
+                escape(f"{comment.file_path}:{comment.line}"),
+                comment.severity.value,
+                f"{comment.confidence:.2f}",
+                "yes" if comment.has_context else "no",
+                escape(comment.body),
+            )
+        console.print(table)
+    else:
+        console.print("No comments above the bar.")
+    stats = result.stats
+    console.print(
+        f"\n{stats.hunks_total} hunk(s) triaged, {stats.hunks_flagged} flagged, "
+        f"{stats.drafts_generated} draft(s); dropped: "
+        f"{stats.dropped_low_confidence} low-confidence, "
+        f"{stats.dropped_invalid_line} bad-anchor, "
+        f"{stats.dropped_lint_duplicate} lint-duplicate, "
+        f"{stats.dropped_over_cap} over-cap; "
+        f"{stats.triage_failures + stats.review_failures} model failure(s)"
+    )
+    if summary is not None:
+        console.print(
+            f"{summary.calls} model call(s), {summary.cache_hits} cache hit(s), "
+            f"~${summary.cost_usd:.4f}"
+        )
 
 
 @cost_app.command("report")
