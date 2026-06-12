@@ -14,7 +14,7 @@ No agent frameworks — the agent loop is plain Python over raw HTTP/SDK calls.
 | 1 | Scaffold, GitHub ingestion, diff parsing, `pra fetch` | done |
 | 2 | Context retrieval (AST-based symbol resolution) | done |
 | 3 | Agent loop (triage → review, confidence gate, dedup) | done |
-| 4 | Posting + dry-run + idempotency | planned |
+| 4 | Posting + dry-run + idempotency | done |
 | 5 | Eval harness (dataset, judge, report) | planned |
 
 ## Install
@@ -42,6 +42,12 @@ pra fetch owner/repo 123
 
 # Check out the PR head and print the symbol context the agent would retrieve
 pra context owner/repo 123
+
+# Review a PR — dry run by default: prints comments, posts nothing
+pra review owner/repo 123
+
+# Actually post the review (single PR review, idempotent per head SHA)
+pra review owner/repo 123 --post
 
 # Summarize model spend per run (cache hits, tokens, cost, estimator drift)
 pra cost report

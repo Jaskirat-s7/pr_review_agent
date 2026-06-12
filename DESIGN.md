@@ -134,6 +134,29 @@ the system prompt and volatile hunk content in the user message, so backend
 prompt caches get a stable prefix. Phase 5's judge prompts join the same
 directory.
 
+## Phase 4
+
+### Dry-run is the default; posting is an explicit `--post`
+The spec's `--dry-run` flag is inverted into an explicit opt-in: an agent
+that posts to a real OSS repo should require a deliberate flag to do so,
+and `--post` reads less ambiguously than `--no-dry-run`.
+
+### Idempotency: deterministic run key, bot-author check (decision #2)
+The review body carries `<!-- pr-review-agent:repo#N@head_sha -->`. Before
+posting, the bot's own identity is resolved via `GET /user` and only
+markers in reviews *it* authored count — a copied marker string in someone
+else's comment cannot suppress a review. Same head → no-op; new push → new
+key → fresh review. Empty results are not posted at all (no marker, no
+noise); re-runs on the same head re-evaluate from the response cache, so
+the repeat costs $0.
+
+### POSTs never blind-retry on 5xx
+A lost 502 on `create_review` may still have posted server-side, and a
+double review is worse than a failed run. The client now retries 5xx only
+for idempotent requests; rate-limit rejections (429 / 403-limit) retry for
+everything since rejection means not-executed. Comment anchors post with
+`side: "RIGHT"` to match the engine's new-file line numbers.
+
 ## Decisions approved for later phases (reviewed 2026-06-11)
 
 These were agreed before Phase 2 started; implement phases against them.
