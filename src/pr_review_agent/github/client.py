@@ -132,6 +132,22 @@ class GitHubClient:
         path = f"/repos/{_validate_repo(repo)}/pulls/{number}/reviews"
         return [Review.from_api(item) for item in self._paginate(path)]
 
+    def list_pull_requests(self, repo: str, *, state: str = "closed") -> Iterator[PullRequest]:
+        """Iterate PRs, most recently updated first (lazy; stop early)."""
+        path = f"/repos/{_validate_repo(repo)}/pulls"
+        params = {"state": state, "sort": "updated", "direction": "desc"}
+        for item in self._paginate(path, extra_params=params):
+            yield PullRequest.from_api(item)
+
+    def compare_diff(self, repo: str, base: str, head: str) -> str:
+        """Unified diff between two commits (pre-review state reconstruction)."""
+        response = self._request(
+            "GET",
+            f"/repos/{_validate_repo(repo)}/compare/{base}...{head}",
+            accept=_ACCEPT_DIFF,
+        )
+        return response.text
+
     def get_authenticated_user(self) -> str:
         """Return the login of the token's identity (the bot account)."""
         response = self._request("GET", "/user")
@@ -178,9 +194,11 @@ class GitHubClient:
 
     # -- internals ----------------------------------------------------------
 
-    def _paginate(self, path: str) -> Iterator[dict[str, Any]]:
+    def _paginate(
+        self, path: str, extra_params: Mapping[str, str] | None = None
+    ) -> Iterator[dict[str, Any]]:
         url: str | None = path
-        params: Mapping[str, str] | None = {"per_page": "100"}
+        params: Mapping[str, str] | None = {"per_page": "100", **(extra_params or {})}
         while url is not None:
             response = self._request("GET", url, params=params)
             payload = response.json()

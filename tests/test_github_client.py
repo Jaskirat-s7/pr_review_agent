@@ -298,6 +298,45 @@ def test_create_review_still_retries_rate_limit_rejections() -> None:
     assert sleeps == [3.0]  # 429 means rejected, so the retry is safe
 
 
+def test_compare_diff_uses_diff_accept() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/repos/octo/widgets/compare/aaa...bbb"
+        assert request.headers["Accept"] == "application/vnd.github.v3.diff"
+        return httpx.Response(200, text="diff --git a/x b/x\n")
+
+    client, _ = make_client(handler)
+    with client:
+        assert client.compare_diff("octo/widgets", "aaa", "bbb").startswith("diff --git")
+
+
+def test_list_pull_requests_passes_params_and_yields_models() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/repos/octo/widgets/pulls"
+        assert request.url.params["state"] == "closed"
+        assert request.url.params["sort"] == "updated"
+        assert request.url.params["direction"] == "desc"
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "number": 9,
+                    "title": "t",
+                    "merged_at": "2026-02-01T00:00:00Z",
+                    "updated_at": "2026-02-02T00:00:00Z",
+                    "base": {"ref": "main", "sha": "b"},
+                    "head": {"ref": "f", "sha": "h"},
+                }
+            ],
+        )
+
+    client, _ = make_client(handler)
+    with client:
+        (pr,) = list(client.list_pull_requests("octo/widgets"))
+    assert pr.number == 9
+    assert pr.merged_at == "2026-02-01T00:00:00Z"
+    assert pr.updated_at == "2026-02-02T00:00:00Z"
+
+
 @pytest.mark.parametrize("bad_repo", ["plainname", "owner/", "/repo", "a/b/c", ""])
 def test_invalid_repo_is_rejected(bad_repo: str) -> None:
     def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover

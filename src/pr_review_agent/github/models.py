@@ -30,6 +30,8 @@ class PullRequest:
     changed_files: int
     additions: int
     deletions: int
+    merged_at: str | None = None
+    updated_at: str = ""
 
     @classmethod
     def from_api(cls, data: Mapping[str, Any]) -> PullRequest:
@@ -54,6 +56,8 @@ class PullRequest:
             changed_files=_int(data, "changed_files"),
             additions=_int(data, "additions"),
             deletions=_int(data, "deletions"),
+            merged_at=_opt_str(data, "merged_at"),
+            updated_at=_str(data, "updated_at"),
         )
 
 
@@ -100,6 +104,7 @@ class ReviewComment:
     commit_id: str
     created_at: str
     in_reply_to_id: int | None
+    original_commit_id: str = ""  # the head the comment was originally made on
 
     @classmethod
     def from_api(cls, data: Mapping[str, Any]) -> ReviewComment:
@@ -118,6 +123,7 @@ class ReviewComment:
             commit_id=_str(data, "commit_id"),
             created_at=_str(data, "created_at"),
             in_reply_to_id=_opt_int(data, "in_reply_to_id"),
+            original_commit_id=_str(data, "original_commit_id"),
         )
 
 
