@@ -7,15 +7,14 @@ a CachingModelClient so every call is cached and cost-tracked.
 
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
 
 from pr_review_agent.config import ReviewConfig
 from pr_review_agent.context.models import FileContext, PRContext
 from pr_review_agent.diff.models import FileDiff, FileStatus, Hunk, LineKind
+from pr_review_agent.jsonutil import parse_model_json
 from pr_review_agent.models.base import ModelClient, ModelError, ModelMessage
 from pr_review_agent.prompts import load_prompt
 from pr_review_agent.review.lint import LintRunner
@@ -140,7 +139,7 @@ class ReviewEngine:
         except ModelError as exc:
             logger.warning("triage call failed for %s: %s", file_diff.path, exc)
             return None
-        payload = _parse_json(response.text)
+        payload = parse_model_json(response.text)
         if not isinstance(payload, dict) or not isinstance(payload.get("worth_reviewing"), bool):
             logger.warning(
                 "unparseable triage verdict for %s: %r", file_diff.path, response.text[:120]
@@ -173,7 +172,7 @@ class ReviewEngine:
         except ModelError as exc:
             logger.warning("review call failed for %s: %s", file_diff.path, exc)
             return None
-        payload = _parse_json(response.text)
+        payload = parse_model_json(response.text)
         if not isinstance(payload, list):
             logger.warning(
                 "unparseable review output for %s: %r", file_diff.path, response.text[:120]
@@ -251,25 +250,3 @@ def _comment_from_item(
         category=category,
         has_context=has_context,
     )
-
-
-def _parse_json(text: str) -> Any:
-    """Parse model output as JSON, tolerating code fences and surrounding prose."""
-    stripped = text.strip()
-    if stripped.startswith("```"):
-        stripped = stripped.split("\n", 1)[1] if "\n" in stripped else ""
-        if stripped.rstrip().endswith("```"):
-            stripped = stripped.rstrip()[: -len("```")]
-    try:
-        return json.loads(stripped)
-    except json.JSONDecodeError:
-        pass
-    for opener, closer in (("{", "}"), ("[", "]")):
-        start = stripped.find(opener)
-        end = stripped.rfind(closer)
-        if start != -1 and end > start:
-            try:
-                return json.loads(stripped[start : end + 1])
-            except json.JSONDecodeError:
-                continue
-    return None
