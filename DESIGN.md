@@ -242,6 +242,41 @@ sections. `pra eval run` is the remaining Phase 5 piece, deliberately
 deferred: schemas for run results are already fixed, so the runner slots
 in without reshaping the judge or report.
 
+## Phase 5 (eval run) + live findings
+
+### Gemini rate-limit backoff
+A live dry-run hit the free tier's few-requests-per-minute cap (429
+RESOURCE_EXHAUSTED) because the engine fires triage+review in a tight loop.
+`GeminiClient` now retries: it parses the server's `retryDelay` hint when
+present (with a 1s cushion), falls back to exponential backoff otherwise,
+caps each wait at `max_sleep_seconds` (60s, matched to the per-minute
+window), and logs each retry. `sleep` is injectable, so the backoff is
+pinned by tests the same way as the GitHub client — no real waiting.
+
+### eval run: check out the pre-review commit, degrade gracefully
+`pra eval run` reviews each case's stored diff, checking out `review_sha`
+(the pre-review commit) via `commit_workspace` so context retrieval sees the
+right tree. If that commit can't be fetched (GC'd, or no network), the case
+is still reviewed without repository context rather than failing the batch —
+those comments are tagged `has_context=False` and the report's context split
+reflects it. Per-case ledger run_ids give per-PR cost; `--max-cases` bounds
+the batch for small-batch sanity before scaling.
+
+### Live findings (2026-06-13)
+First live engine runs surfaced two real bugs, both fixed: Gemini 2.5 Flash
+thinks by default and thinking tokens come out of `max_output_tokens` (a
+128-token triage budget truncated all JSON — fixed with `thinking_budget=0`);
+and the free-tier rate limit (fixed with backoff above). Measured
+**estimator drift: −12% to −19%** across runs — chars/4 consistently
+under-counts Gemini's reported input tokens by that much, so the budget
+heuristic runs slightly optimistic. Observed but not yet acted on: Flash
+returns `confidence: 0.90` for nearly every comment (poorly calibrated, so
+the confidence gate barely bites) — relevant when tuning thresholds against
+judged data. Dataset note: httpx at `--min-comments 1` over a wide window
+yields mostly doc/changelog PRs, which triage correctly declines (0
+comments) — a code-review-heavy target repo is needed for meaningful
+headline recall.
+
 ## Decisions approved for later phases (reviewed 2026-06-11)
 
 These were agreed before Phase 2 started; implement phases against them.
