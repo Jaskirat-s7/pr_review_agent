@@ -50,6 +50,12 @@ class GeminiClient:
                     system_instruction=system,
                     max_output_tokens=max_tokens,
                     temperature=0.0,
+                    # Gemini 2.5 models think by default, and thinking tokens
+                    # are drawn from max_output_tokens — a small structured
+                    # budget gets consumed by reasoning, truncating the JSON.
+                    # These calls want deterministic JSON, not reasoning, so
+                    # disable thinking (budget 0).
+                    thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
                 ),
             )
         except Exception as exc:  # the SDK raises a wide family of errors
