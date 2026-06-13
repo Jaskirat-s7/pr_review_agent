@@ -351,6 +351,16 @@ def eval_judge(
         str,
         typer.Option("--backend", help="Which backend's run results to judge."),
     ] = "gemini",
+    judge_backend: Annotated[
+        str | None,
+        typer.Option(
+            "--judge-backend", help="Judge model backend (default: models.judge_backend)."
+        ),
+    ] = None,
+    delay: Annotated[
+        float,
+        typer.Option("--delay", help="Seconds between cases (spread across usage windows)."),
+    ] = 0.0,
     sample_fraction: Annotated[
         float,
         typer.Option("--sample-fraction", help="Fraction of judgments exported to CSV."),
@@ -363,7 +373,13 @@ def eval_judge(
         typer.Option("--config", help="Path to config.toml (default: ./config.toml)."),
     ] = None,
 ) -> None:
-    """Judge a backend's run results against the human comments (Anthropic judge)."""
+    """Judge a backend's run results against the human comments.
+
+    The judge runs on models.judge_backend (Claude Code by default, drawing
+    on a subscription). A 50-PR batch can exceed a single Claude Code 5-hour
+    usage window — use --delay to spread it, and re-run to resume (judgments
+    are rewritten per backend, cached calls replay for free).
+    """
     try:
         config = load_config(config_path)
         cases = load_cases(dataset_dir / CASES_FILE)
@@ -374,16 +390,17 @@ def eval_judge(
                 f"backend {backend!r} first"
             )
         runs = load_runs(run_file)
-        judge_model = build_model_client("anthropic", config.models)
+        judge_name = judge_backend or config.models.judge_backend
+        judge_model = build_model_client(judge_name, config.models)
         timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         with CallStore(Path(config.models.db_path)) as store:
             caching = CachingModelClient(
                 judge_model,
                 store,
-                run_id=f"judge:{backend} {timestamp}",
+                run_id=f"judge:{backend} via {judge_name} {timestamp}",
                 pricing=config.models.pricing,
             )
-            judgments = EvalJudge(caching).judge_all(cases, runs)
+            judgments = EvalJudge(caching, delay_seconds=delay).judge_all(cases, runs)
     except (ConfigError, EvalDataError, ModelError) as exc:
         err_console.print(f"[red]error:[/red] {escape(str(exc))}")
         raise typer.Exit(code=1) from exc
@@ -406,11 +423,16 @@ def eval_judge(
 @eval_app.command("report")
 def eval_report(
     dataset_dir: Annotated[Path, typer.Argument(help="Dataset directory.")],
+    config_path: Annotated[
+        Path | None,
+        typer.Option("--config", help="Path to config.toml (default: ./config.toml)."),
+    ] = None,
 ) -> None:
     """Render the markdown eval report and write it to <dataset>/report.md."""
     try:
-        markdown = generate_report(dataset_dir)
-    except EvalDataError as exc:
+        config = load_config(config_path)
+        markdown = generate_report(dataset_dir, ceiling_backend=config.models.ceiling_backend)
+    except (ConfigError, EvalDataError) as exc:
         err_console.print(f"[red]error:[/red] {escape(str(exc))}")
         raise typer.Exit(code=1) from exc
     report_file = dataset_dir / "report.md"

@@ -54,13 +54,15 @@ pra cost report
 
 # Eval harness: collect human-reviewed PRs, judge agent output, report
 pra eval build-dataset owner/repo --since 2026-01-01 --out dataset/
-pra eval judge dataset/ --backend gemini    # Anthropic judge; needs run results
+pra eval judge dataset/ --backend gemini --delay 5   # Claude Code judge; needs run results
 pra eval report dataset/
 ```
 
-Model backends need their keys in the environment: `GEMINI_API_KEY` for the
-default agent loop, `ANTHROPIC_API_KEY` for eval-judge/ceiling runs. The
-Ollama backend needs no key. Every model call goes through a SQLite cache —
+Model backends read keys from the environment: `GEMINI_API_KEY` for the
+agent loop and the Gemini-Pro ceiling, `ANTHROPIC_API_KEY` for the
+`anthropic` backend. The default eval judge backend is `claude-code`, which
+shells out to the `claude` CLI on a subscription (no API key, recorded at
+$0). Ollama needs no key. Every model call goes through a SQLite cache —
 re-running an identical prompt is free and logged.
 
 `GITHUB_TOKEN` is optional for public repos but strongly recommended

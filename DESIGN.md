@@ -203,6 +203,35 @@ discarded but the verdict survives. Agent runs with zero comments are
 scored miss without spending judge calls. The 20% CSV sample is seeded
 (default 42) so a re-export reproduces the same rows.
 
+### Judge backend: Claude Code subprocess, $0 ledger, batch delays
+The judge defaults to a `ClaudeCodeClient` that shells out to `claude -p
+--output-format json --max-turns 1` (system via `--append-system-prompt`,
+user turns via stdin). This draws on a Claude Code subscription instead of
+metered API credits — cross-family from the Gemini system under test, which
+keeps the judge independent. Usage flows through the same SQLite ledger, but
+cost is recorded as $0: the ledger tracks *API* spend and these calls don't
+incur any. The model label is the fixed string `claude-code` (mapped to $0
+pricing) so the plan's underlying model can change without reshaping the
+ledger. Verified live against the real CLI — the JSON envelope
+(`is_error`/`result`/`usage.{input,output}_tokens`) matches the parser, and
+input_tokens is the fresh-input count (cache tokens excluded), consistent
+with the Anthropic backend. Because a 50-PR batch can exceed a single
+Claude Code 5-hour usage window, `pra eval judge --delay N` spaces cases out
+and a re-run resumes (judgments rewritten per backend; cached calls replay
+free).
+
+### Ceiling baseline: Gemini 2.5 Pro, not Opus API
+The ceiling column compares the Flash system-under-test against a
+frontier-of-the-same-family model. Originally Opus via the Anthropic API;
+switched to Gemini 2.5 Pro on the same free tier so the whole eval has
+~$0 marginal cost while preserving the "chose the cheap model deliberately,
+measured the gap" narrative. The ceiling run label is configurable
+(`models.ceiling_backend`, default `gemini-pro`); the report marks that
+column "(ceiling)". Cost-per-PR columns remain API-list-equivalent (the
+portable "what it costs at scale" number, and it keeps the Phase 3 cost
+machinery honest); a standing report note states actual marginal spend was
+~$0 — both numbers, neither overwritten.
+
 ### Report: recall = match + 0.5·partial, errors excluded
 The 0.5 partial weight is stated in the report legend, not buried in code.
 Judge errors are excluded from denominators and get their own row — an
