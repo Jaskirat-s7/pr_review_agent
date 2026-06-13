@@ -48,6 +48,38 @@ def pr_head_workspace(
         shutil.rmtree(workdir, ignore_errors=True)
 
 
+@contextmanager
+def commit_workspace(
+    clone_url: str,
+    sha: str,
+    *,
+    token: str | None = None,
+) -> Iterator[Path]:
+    """Yield a temp checkout of an arbitrary commit SHA; clean up after.
+
+    Used by the eval harness to review a PR's pre-review state (a commit that
+    is not necessarily the current head). Raises :class:`WorkspaceError` if
+    the commit cannot be fetched — the caller degrades to reviewing without
+    repository context rather than failing the whole run.
+    """
+    if shutil.which("git") is None:
+        raise WorkspaceError("git executable not found on PATH")
+    workdir = Path(tempfile.mkdtemp(prefix="pra-workspace-"))
+    try:
+        env = _git_env(token)
+        git = ["git", "-C", str(workdir)]
+        _run([*git, "init", "--quiet"], env)
+        _run([*git, "fetch", "--quiet", "--depth", "1", clone_url, sha], env)
+        fetched = _run([*git, "rev-parse", "FETCH_HEAD"], env).strip()
+        if fetched != sha:
+            raise WorkspaceError(f"fetched {fetched} but requested {sha}")
+        _run([*git, "checkout", "--quiet", "--detach", "FETCH_HEAD"], env)
+        logger.info("checked out commit %s", sha[:12])
+        yield workdir
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
 def _checkout_pr_head(
     workdir: Path,
     clone_url: str,
