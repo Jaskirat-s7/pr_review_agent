@@ -19,6 +19,7 @@ from pr_review_agent.diff.parser import DiffParseError, parse_diff
 from pr_review_agent.evals.dataset import build_dataset
 from pr_review_agent.evals.judge import EvalJudge, export_sample
 from pr_review_agent.evals.report import generate_report
+from pr_review_agent.evals.run import build_run_result, review_case
 from pr_review_agent.evals.schema import (
     CASES_FILE,
     EvalDataError,
@@ -342,6 +343,86 @@ def eval_build_dataset(
         f"comments, {stats.skipped_unmerged} unmerged/out-of-window."
     )
     console.print(f"Wrote {escape(str(out / CASES_FILE))}")
+
+
+@eval_app.command("run")
+def eval_run(
+    dataset_dir: Annotated[Path, typer.Argument(help="Dataset directory.")],
+    backend: Annotated[
+        str | None,
+        typer.Option("--backend", help="Agent backend to run (default: models.backend)."),
+    ] = None,
+    max_cases: Annotated[
+        int | None,
+        typer.Option("--max-cases", help="Run only the first N cases (small-batch sanity)."),
+    ] = None,
+    config_path: Annotated[
+        Path | None,
+        typer.Option("--config", help="Path to config.toml (default: ./config.toml)."),
+    ] = None,
+) -> None:
+    """Run the agent over each dataset case; write runs/<backend>.jsonl."""
+    try:
+        config = load_config(config_path)
+        cases = load_cases(dataset_dir / CASES_FILE)
+    except (ConfigError, EvalDataError) as exc:
+        err_console.print(f"[red]error:[/red] {escape(str(exc))}")
+        raise typer.Exit(code=1) from exc
+    if max_cases is not None:
+        cases = cases[:max_cases]
+    if not cases:
+        err_console.print("[yellow]no cases to run.[/yellow]")
+        raise typer.Exit(code=1)
+
+    backend_name = backend or config.models.backend
+    token = github_token()
+    if token is None:
+        err_console.print(
+            "[yellow]GITHUB_TOKEN not set; using unauthenticated API (60 requests/hour).[/yellow]"
+        )
+    try:
+        inner = build_model_client(backend_name, config.models)
+    except ConfigError as exc:
+        err_console.print(f"[red]error:[/red] {escape(str(exc))}")
+        raise typer.Exit(code=1) from exc
+
+    timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    results = []
+    with CallStore(Path(config.models.db_path)) as store:
+        for index, case in enumerate(cases, 1):
+            run_id = f"eval:{case.repo}#{case.number} via {backend_name} {timestamp}"
+            caching = CachingModelClient(inner, store, run_id=run_id, pricing=config.models.pricing)
+            try:
+                review_result = review_case(
+                    case,
+                    caching,
+                    review_config=config.review,
+                    context_config=config.context,
+                    clone_url=f"{config.github.clone_base_url.rstrip('/')}/{case.repo}.git",
+                    token=token,
+                )
+            except (ModelError, DiffParseError) as exc:
+                err_console.print(
+                    f"[red]error on {escape(case.repo)}#{case.number}:[/red] {escape(str(exc))}"
+                )
+                raise typer.Exit(code=1) from exc
+            summary = next((s for s in store.run_summaries() if s.run_id == run_id), None)
+            cost = summary.cost_usd if summary is not None else 0.0
+            results.append(
+                build_run_result(
+                    case, review_result, backend=backend_name, model=inner.model, cost_usd=cost
+                )
+            )
+            console.print(
+                f"[{index}/{len(cases)}] {escape(case.repo)}#{case.number}: "
+                f"{len(review_result.comments)} comment(s), "
+                f"{review_result.stats.triage_failures + review_result.stats.review_failures} "
+                f"failure(s), ~${cost:.4f}"
+            )
+    count = write_jsonl(runs_path(dataset_dir, backend_name), results)
+    console.print(
+        f"Wrote {count} run result(s) to {escape(str(runs_path(dataset_dir, backend_name)))}"
+    )
 
 
 @eval_app.command("judge")

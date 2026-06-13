@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -100,6 +101,81 @@ def test_build_dataset_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     (case,) = load_cases(out / CASES_FILE)
     assert case.reconstructed
     assert case.review_sha == "o" * 40
+
+
+def test_run_cli_writes_run_results(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from collections.abc import Sequence
+    from contextlib import contextmanager
+
+    from pr_review_agent import cli
+    from pr_review_agent.evals.schema import EvalCase, load_runs, runs_path
+    from pr_review_agent.models.base import ModelMessage, ModelResponse
+
+    app_source = 'from helpers import greet\n\n\ndef run() -> None:\n    greet("hi")\n'
+    lines = app_source.splitlines()
+    diff = (
+        "diff --git a/app.py b/app.py\nnew file mode 100644\n--- /dev/null\n+++ b/app.py\n"
+        f"@@ -0,0 +1,{len(lines)} @@\n" + "\n".join(f"+{x}" for x in lines) + "\n"
+    )
+    case = EvalCase(
+        repo="octo/widgets",
+        number=7,
+        title="t",
+        review_sha="a" * 40,
+        reconstructed=True,
+        diff=diff,
+        human_comments=(),
+    )
+    write_jsonl(tmp_path / CASES_FILE, [case])
+
+    head = tmp_path / "head"
+    head.mkdir()
+    (head / "app.py").write_text(app_source, encoding="utf-8")
+    (head / "helpers.py").write_text("def greet(n):\n    return n\n", encoding="utf-8")
+
+    class _Model:
+        @property
+        def model(self) -> str:
+            return "gemini-2.5-flash"
+
+        def complete(
+            self,
+            system: str,
+            messages: Sequence[ModelMessage],
+            *,
+            max_tokens: int = 1024,
+            purpose: str = "",
+        ) -> ModelResponse:
+            text = (
+                json.dumps({"worth_reviewing": True, "category": "bug"})
+                if purpose == "triage"
+                else json.dumps(
+                    [{"line": 5, "severity": "major", "confidence": 0.9, "comment": "discarded"}]
+                )
+            )
+            return ModelResponse(
+                text=text, model="gemini-2.5-flash", input_tokens=10, output_tokens=4
+            )
+
+    @contextmanager
+    def fake_ws(clone_url: str, sha: str, *, token: str | None = None):  # type: ignore[no-untyped-def]
+        yield head
+
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setattr(cli, "build_model_client", lambda backend, config: _Model())
+    monkeypatch.setattr("pr_review_agent.evals.run.commit_workspace", fake_ws)
+    monkeypatch.chdir(tmp_path)  # pra.sqlite3 lands here
+
+    result = runner.invoke(
+        cli.app, ["eval", "run", str(tmp_path), "--backend", "gemini"], env={"COLUMNS": "200"}
+    )
+    assert result.exit_code == 0, result.output
+    runs = load_runs(runs_path(tmp_path, "gemini"))
+    assert len(runs) == 1
+    (run,) = runs
+    assert run.backend == "gemini"
+    assert run.comments[0].line == 5
+    assert run.comments[0].has_context
 
 
 def test_report_cli_writes_markdown(tmp_path: Path) -> None:
