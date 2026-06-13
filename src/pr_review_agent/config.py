@@ -53,7 +53,10 @@ class ModelPricing:
 # are free. Override or extend via [models.pricing] in config.toml.
 DEFAULT_PRICING: Mapping[str, ModelPricing] = {
     "gemini-2.5-flash": ModelPricing(input_per_mtok=0.30, output_per_mtok=2.50),
+    "gemini-2.5-pro": ModelPricing(input_per_mtok=1.25, output_per_mtok=10.00),
     "claude-opus-4-8": ModelPricing(input_per_mtok=5.00, output_per_mtok=25.00),
+    # Claude Code judge runs on a subscription, not metered API spend.
+    "claude-code": ModelPricing(input_per_mtok=0.0, output_per_mtok=0.0),
     "qwen2.5-coder:7b": ModelPricing(input_per_mtok=0.0, output_per_mtok=0.0),
 }
 
@@ -62,12 +65,17 @@ DEFAULT_PRICING: Mapping[str, ModelPricing] = {
 class ModelsConfig:
     """Model backends, call database, and pricing."""
 
-    backend: str = "gemini"  # agent-loop backend: gemini | anthropic | ollama
+    backend: str = "gemini"  # agent-loop backend: gemini | anthropic | ollama | claude-code
     db_path: str = "pra.sqlite3"
     gemini_model: str = "gemini-2.5-flash"
+    gemini_pro_model: str = "gemini-2.5-pro"  # eval ceiling baseline (same free tier)
     anthropic_model: str = "claude-opus-4-8"
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "qwen2.5-coder:7b"
+    # Empty = let the claude CLI pick the plan's default model.
+    claude_code_model: str = ""
+    judge_backend: str = "claude-code"  # eval judge backend
+    ceiling_backend: str = "gemini-pro"  # run label marked "(ceiling)" in the report
     prices_as_of: str = "2026-06"
     pricing: Mapping[str, ModelPricing] = field(default_factory=lambda: dict(DEFAULT_PRICING))
 
@@ -178,6 +186,9 @@ def _models_config(raw: object, *, source: Path) -> ModelsConfig:
         backend=_expect(table, "backend", str, defaults.backend, source, section),
         db_path=_expect(table, "db_path", str, defaults.db_path, source, section),
         gemini_model=_expect(table, "gemini_model", str, defaults.gemini_model, source, section),
+        gemini_pro_model=_expect(
+            table, "gemini_pro_model", str, defaults.gemini_pro_model, source, section
+        ),
         anthropic_model=_expect(
             table, "anthropic_model", str, defaults.anthropic_model, source, section
         ),
@@ -185,6 +196,13 @@ def _models_config(raw: object, *, source: Path) -> ModelsConfig:
             table, "ollama_base_url", str, defaults.ollama_base_url, source, section
         ),
         ollama_model=_expect(table, "ollama_model", str, defaults.ollama_model, source, section),
+        claude_code_model=_expect(
+            table, "claude_code_model", str, defaults.claude_code_model, source, section
+        ),
+        judge_backend=_expect(table, "judge_backend", str, defaults.judge_backend, source, section),
+        ceiling_backend=_expect(
+            table, "ceiling_backend", str, defaults.ceiling_backend, source, section
+        ),
         prices_as_of=_expect(table, "prices_as_of", str, defaults.prices_as_of, source, section),
         pricing=pricing,
     )

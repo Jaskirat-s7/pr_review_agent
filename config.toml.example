@@ -26,15 +26,22 @@ max_sleep_seconds = 120.0
 token_budget = 6000
 
 [models]
-# Agent-loop backend: gemini (default) | anthropic | ollama.
-# The anthropic backend is reserved for the eval judge and ceiling baselines.
+# Agent-loop backend: gemini (default) | gemini-pro | anthropic | ollama | claude-code.
 backend = "gemini"
 # SQLite DB holding the response cache and the per-call cost ledger.
 db_path = "pra.sqlite3"
-gemini_model = "gemini-2.5-flash"
+gemini_model = "gemini-2.5-flash"      # system under test
+gemini_pro_model = "gemini-2.5-pro"    # eval ceiling baseline (same free tier)
 anthropic_model = "claude-opus-4-8"
 ollama_base_url = "http://localhost:11434"
 ollama_model = "qwen2.5-coder:7b"
+# Empty = let the `claude` CLI choose the plan's default model.
+claude_code_model = ""
+# Eval judge backend. claude-code shells out to the `claude` CLI on a
+# subscription (recorded at $0 — the ledger tracks API spend).
+judge_backend = "claude-code"
+# Run label marked "(ceiling)" in the report.
+ceiling_backend = "gemini-pro"
 # Pricing vintage; cost reports state the prices they were computed with.
 prices_as_of = "2026-06"
 
@@ -43,9 +50,18 @@ prices_as_of = "2026-06"
 input_per_mtok = 0.30
 output_per_mtok = 2.50
 
+[models.pricing."gemini-2.5-pro"]
+input_per_mtok = 1.25
+output_per_mtok = 10.00
+
 [models.pricing."claude-opus-4-8"]
 input_per_mtok = 5.00
 output_per_mtok = 25.00
+
+# Claude Code runs on a subscription, not metered API spend.
+[models.pricing."claude-code"]
+input_per_mtok = 0.0
+output_per_mtok = 0.0
 
 [models.pricing."qwen2.5-coder:7b"]
 input_per_mtok = 0.0
