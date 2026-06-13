@@ -117,9 +117,92 @@ def test_gemini_parses_text_and_usage() -> None:
 
 def test_gemini_error_wrapped_as_model_error() -> None:
     def generate_content(**kwargs: Any) -> Any:
-        raise RuntimeError("quota exceeded")
+        raise RuntimeError("bad request: invalid argument")
 
     stub = SimpleNamespace(models=SimpleNamespace(generate_content=generate_content))
-    client = GeminiClient("key", client=cast("Any", stub))
-    with pytest.raises(ModelError, match="quota exceeded"):
+    sleeps: list[float] = []
+    client = GeminiClient("key", client=cast("Any", stub), sleep=sleeps.append)
+    with pytest.raises(ModelError, match="invalid argument"):
         client.complete("sys", MESSAGES)
+    assert sleeps == []  # non-retryable: no backoff
+
+
+class _RateLimitError(Exception):
+    """Stands in for a google-genai 429; carries a numeric .code."""
+
+    def __init__(self, message: str, code: int = 429) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def _ok() -> Any:
+    return SimpleNamespace(
+        text="ok", usage_metadata=SimpleNamespace(prompt_token_count=10, candidates_token_count=2)
+    )
+
+
+def test_gemini_retries_429_and_honors_retry_delay() -> None:
+    calls = 0
+
+    def generate_content(**kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise _RateLimitError("429 RESOURCE_EXHAUSTED ... 'retryDelay': '34s' ...", code=429)
+        return _ok()
+
+    stub = SimpleNamespace(models=SimpleNamespace(generate_content=generate_content))
+    sleeps: list[float] = []
+    client = GeminiClient("key", client=cast("Any", stub), sleep=sleeps.append)
+    response = client.complete("sys", MESSAGES)
+    assert response.text == "ok"
+    assert calls == 2
+    assert sleeps == [35.0]  # retryDelay 34s + 1s cushion
+
+
+def test_gemini_retry_delay_capped_at_max_sleep() -> None:
+    def generate_content(**kwargs: Any) -> Any:
+        raise _RateLimitError("RESOURCE_EXHAUSTED 'retryDelay': '300s'", code=429)
+
+    stub = SimpleNamespace(models=SimpleNamespace(generate_content=generate_content))
+    sleeps: list[float] = []
+    client = GeminiClient(
+        "key",
+        client=cast("Any", stub),
+        max_retries=1,
+        max_sleep_seconds=60.0,
+        sleep=sleeps.append,
+    )
+    with pytest.raises(ModelError, match="Gemini request failed"):
+        client.complete("sys", MESSAGES)
+    assert sleeps == [60.0]  # 300s clamped to the cap
+
+
+def test_gemini_exponential_backoff_without_retry_hint() -> None:
+    calls = 0
+
+    def generate_content(**kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        if calls <= 2:
+            raise _RateLimitError("503 UNAVAILABLE: the model is overloaded", code=503)
+        return _ok()
+
+    stub = SimpleNamespace(models=SimpleNamespace(generate_content=generate_content))
+    sleeps: list[float] = []
+    client = GeminiClient("key", client=cast("Any", stub), sleep=sleeps.append)
+    response = client.complete("sys", MESSAGES)
+    assert response.text == "ok"
+    assert sleeps == [1.0, 2.0]  # 2**0 floored to 1.0, then 2**1
+
+
+def test_gemini_retries_exhausted_raises() -> None:
+    def generate_content(**kwargs: Any) -> Any:
+        raise _RateLimitError("429 RESOURCE_EXHAUSTED", code=429)
+
+    stub = SimpleNamespace(models=SimpleNamespace(generate_content=generate_content))
+    sleeps: list[float] = []
+    client = GeminiClient("key", client=cast("Any", stub), max_retries=2, sleep=sleeps.append)
+    with pytest.raises(ModelError, match="Gemini request failed"):
+        client.complete("sys", MESSAGES)
+    assert len(sleeps) == 2  # two retries, then give up
