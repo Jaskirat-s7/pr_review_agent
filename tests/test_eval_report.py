@@ -67,7 +67,10 @@ def _judgment(number: int, backend: str, *, first_verdict: str) -> CaseJudgment:
 def _build_dataset_dir(tmp_path: Path) -> Path:
     cases = [_case(1, reconstructed=True), _case(2, reconstructed=False)]
     write_jsonl(tmp_path / CASES_FILE, cases)
-    for backend, verdicts in (("gemini", ("match", "miss")), ("anthropic", ("match", "match"))):
+    for backend, verdicts in (
+        ("gemini-flash", ("match", "miss")),
+        ("gemini-pro", ("match", "match")),
+    ):
         write_jsonl(
             runs_path(tmp_path, backend),
             [_run(1, backend, cost=0.002), _run(2, backend, cost=0.004)],
@@ -84,23 +87,24 @@ def _build_dataset_dir(tmp_path: Path) -> Path:
 
 def test_headline_metrics_and_ceiling_column(tmp_path: Path) -> None:
     report = generate_report(_build_dataset_dir(tmp_path))
-    assert "anthropic (ceiling)" in report
-    # Columns sort alphabetically: anthropic first, then gemini.
-    # anthropic: match=2, miss=2 of 4 human comments → recall 0.50
-    # gemini: match=1, miss=3 → recall 0.25
-    assert "| recall vs human comments | 0.50 | 0.25 |" in report
+    assert "gemini-pro (ceiling)" in report
+    # Columns sort alphabetically: gemini-flash first, then gemini-pro.
+    # flash: match=1, miss=3 of 4 human comments → recall 0.25
+    # pro: match=2, miss=2 → recall 0.50
+    assert "| recall vs human comments | 0.25 | 0.50 |" in report
     assert "| false positives per PR | 1.00 | 1.00 |" in report
     assert "| cost per PR (USD) | $0.0030 | $0.0030 |" in report
     assert "match + 0.5·partial" in report  # scoring legend is stated
+    assert "marginal spend for this eval was ~$0" in report  # cost narrative
 
 
 def test_contamination_split_present(tmp_path: Path) -> None:
     report = generate_report(_build_dataset_dir(tmp_path))
     assert "## Recall by dataset contamination" in report
-    # anthropic matched on both cases (0.50 each); gemini only on the
-    # reconstructed case — its fallback recall collapses to 0.00.
+    # pro matched on both cases (0.50 each); flash only on the reconstructed
+    # case — its fallback recall collapses to 0.00.
     assert "| reconstructed (clean) | 0.50 | 0.50 |" in report
-    assert "| final-diff fallback | 0.50 | 0.00 |" in report
+    assert "| final-diff fallback | 0.00 | 0.50 |" in report
 
 
 def test_context_split_uses_agent_comment_flags(tmp_path: Path) -> None:
@@ -109,6 +113,12 @@ def test_context_split_uses_agent_comment_flags(tmp_path: Path) -> None:
     # matched agent comment (index 0) has context; the false positive (index 1) doesn't
     assert "| matched a human comment | 1 | 0 |" in report
     assert "| false positive | 0 | 2 |" in report
+
+
+def test_explicit_ceiling_backend_override(tmp_path: Path) -> None:
+    report = generate_report(_build_dataset_dir(tmp_path), ceiling_backend="gemini-flash")
+    assert "gemini-flash (ceiling)" in report
+    assert "gemini-pro (ceiling)" not in report
 
 
 def test_report_without_judgments_says_so(tmp_path: Path) -> None:

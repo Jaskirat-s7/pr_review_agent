@@ -12,7 +12,8 @@ from __future__ import annotations
 import csv
 import logging
 import random
-from collections.abc import Sequence
+import time
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TypeVar
 
@@ -41,8 +42,16 @@ _EXTRA_VERDICTS = frozenset({"plausible-extra", "false-positive"})
 class EvalJudge:
     """Judges one backend's run results against the dataset."""
 
-    def __init__(self, client: ModelClient) -> None:
+    def __init__(
+        self,
+        client: ModelClient,
+        *,
+        delay_seconds: float = 0.0,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
         self._client = client
+        self._delay_seconds = delay_seconds
+        self._sleep = sleep
         self._system = load_prompt("judge_system").template
         self._match_user = load_prompt("judge_match_user")
         self._extra_user = load_prompt("judge_extra_user")
@@ -55,6 +64,11 @@ class EvalJudge:
             if run is None:
                 logger.warning("no run result for %s#%d; skipping", case.repo, case.number)
                 continue
+            # Space out cases so a 50-PR batch doesn't burst against the
+            # Claude Code 5-hour usage window. A run is resumable: judgments
+            # are written per backend, so a partial batch can be re-run.
+            if judgments and self._delay_seconds > 0:
+                self._sleep(self._delay_seconds)
             judgments.append(self.judge_case(case, run))
         return judgments
 

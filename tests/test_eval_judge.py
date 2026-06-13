@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import dataclasses
 import json
 from collections.abc import Sequence
 from pathlib import Path
@@ -147,6 +148,19 @@ def test_case_without_run_result_is_skipped() -> None:
     judge_client = ScriptedJudge([])
     judgments = EvalJudge(judge_client).judge_all([_case()], [])
     assert judgments == []
+
+
+def test_delay_sleeps_between_cases_not_before_first() -> None:
+    # 4 judge calls per case (2 human miss + 2 unmatched agent comments); two cases.
+    judge_client = ScriptedJudge(
+        [json.dumps({"verdict": "miss", "matched_agent_index": None, "reason": ""})] * 4
+        + [json.dumps({"verdict": "false-positive", "reason": ""})] * 4
+    )
+    cases = [_case(), dataclasses.replace(_case(), number=8)]
+    runs = [_run(), dataclasses.replace(_run(), number=8)]
+    slept: list[float] = []
+    EvalJudge(judge_client, delay_seconds=2.5, sleep=slept.append).judge_all(cases, runs)
+    assert slept == [2.5]  # once, between the two cases — not before the first
 
 
 def test_export_sample_is_seeded_and_sized(tmp_path: Path) -> None:

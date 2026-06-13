@@ -23,7 +23,7 @@ from pr_review_agent.evals.schema import (
     runs_path,
 )
 
-CEILING_BACKEND = "anthropic"
+DEFAULT_CEILING_BACKEND = "gemini-pro"
 
 
 @dataclass
@@ -115,7 +115,7 @@ def compute_metrics(
     return metrics
 
 
-def generate_report(dataset_dir: Path) -> str:
+def generate_report(dataset_dir: Path, *, ceiling_backend: str = DEFAULT_CEILING_BACKEND) -> str:
     cases = load_cases(dataset_dir / CASES_FILE)
     backends = (
         sorted(path.stem for path in (dataset_dir / "judgments").glob("*.jsonl"))
@@ -145,22 +145,39 @@ def generate_report(dataset_dir: Path) -> str:
         runs = load_runs(run_file) if run_file.is_file() else []
         all_metrics.append(compute_metrics(backend, cases, runs, judgments))
 
-    lines.extend(_headline_table(all_metrics))
-    lines.extend(_contamination_table(all_metrics))
-    lines.extend(_context_tables(all_metrics))
+    lines.extend(_headline_table(all_metrics, ceiling_backend))
+    lines.extend(_contamination_table(all_metrics, ceiling_backend))
+    lines.extend(_context_tables(all_metrics, ceiling_backend))
+    lines.extend(
+        [
+            "## Cost",
+            "",
+            "Cost-per-PR columns are API-list-equivalent for the system under "
+            "test — what each run would cost at metered API rates. Actual "
+            "marginal spend for this eval was ~$0: the Gemini runs used the "
+            "free tier and the Claude Code judge ran on a subscription "
+            "(recorded at $0 — the ledger tracks API spend, which these "
+            "calls do not incur).",
+            "",
+        ]
+    )
     return "\n".join(lines) + "\n"
 
 
-def _column_label(backend: str) -> str:
-    return f"{backend} (ceiling)" if backend == CEILING_BACKEND else backend
+def _column_label(backend: str, ceiling_backend: str) -> str:
+    return f"{backend} (ceiling)" if backend == ceiling_backend else backend
 
 
 def _fmt_recall(value: float | None) -> str:
     return "n/a" if value is None else f"{value:.2f}"
 
 
-def _headline_table(all_metrics: list[BackendMetrics]) -> list[str]:
-    header = "| metric | " + " | ".join(_column_label(m.backend) for m in all_metrics) + " |"
+def _headline_table(all_metrics: list[BackendMetrics], ceiling_backend: str) -> list[str]:
+    header = (
+        "| metric | "
+        + " | ".join(_column_label(m.backend, ceiling_backend) for m in all_metrics)
+        + " |"
+    )
     divider = "|---|" + "---:|" * len(all_metrics)
     rows = [
         ("cases judged", [str(m.cases) for m in all_metrics]),
@@ -190,8 +207,12 @@ def _headline_table(all_metrics: list[BackendMetrics]) -> list[str]:
     return out
 
 
-def _contamination_table(all_metrics: list[BackendMetrics]) -> list[str]:
-    header = "| subset | " + " | ".join(_column_label(m.backend) for m in all_metrics) + " |"
+def _contamination_table(all_metrics: list[BackendMetrics], ceiling_backend: str) -> list[str]:
+    header = (
+        "| subset | "
+        + " | ".join(_column_label(m.backend, ceiling_backend) for m in all_metrics)
+        + " |"
+    )
     divider = "|---|" + "---:|" * len(all_metrics)
     return [
         "## Recall by dataset contamination",
@@ -212,12 +233,12 @@ def _contamination_table(all_metrics: list[BackendMetrics]) -> list[str]:
     ]
 
 
-def _context_tables(all_metrics: list[BackendMetrics]) -> list[str]:
+def _context_tables(all_metrics: list[BackendMetrics], ceiling_backend: str) -> list[str]:
     out = ["## Agent-comment outcomes by retrieved context", ""]
     for m in all_metrics:
         out.extend(
             [
-                f"### {_column_label(m.backend)}",
+                f"### {_column_label(m.backend, ceiling_backend)}",
                 "",
                 "| outcome | with context | without context |",
                 "|---|---:|---:|",
