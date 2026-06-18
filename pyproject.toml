@@ -24,6 +24,12 @@ dev = [
     "pytest>=8.2",
     "ruff>=0.6",
 ]
+# Local RAG retrieval path. Embeddings and reranker models are pulled at
+# runtime by sentence-transformers; full-text search uses LanceDB's tantivy.
+rag = [
+    "lancedb>=0.13",
+    "sentence-transformers>=3.0",
+]
 
 [project.scripts]
 pra = "pr_review_agent.cli:app"
@@ -58,6 +64,11 @@ strict = true
 python_version = "3.11"
 files = ["src", "tests"]
 warn_unreachable = true
+
+# Optional rag-extra deps ship no type stubs.
+[[tool.mypy.overrides]]
+module = ["lancedb.*", "sentence_transformers.*", "torch.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
