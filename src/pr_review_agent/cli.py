@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
@@ -18,6 +19,13 @@ from pr_review_agent.diff.parser import DiffParseError, parse_diff
 from pr_review_agent.evals.dataset import build_dataset
 from pr_review_agent.evals.judge import EvalJudge, export_sample
 from pr_review_agent.evals.report import generate_report
+from pr_review_agent.evals.retrieval_run import (
+    GoldCase,
+    format_markdown,
+    gold_queries_for,
+    load_gold,
+    score_retriever,
+)
 from pr_review_agent.evals.run import build_run_result, review_case
 from pr_review_agent.evals.schema import (
     CASES_FILE,
@@ -219,6 +227,118 @@ def index(
         f"Indexed {escape(repo)}@{sha[:8]}: {stats.chunks} chunk(s) from "
         f"{stats.files} file(s) → {escape(str(stats.dest))}"
     )
+
+
+@app.command(name="retrieval-eval")
+def retrieval_eval(
+    gold: Annotated[
+        Path, typer.Argument(help="Gold cases JSONL (repo, number, sha, queries).")
+    ],
+    retrievers: Annotated[
+        str,
+        typer.Option("--retrievers", help="Comma-separated subset of: ast,rag,hybrid."),
+    ] = "ast,rag,hybrid",
+    out: Annotated[
+        Path | None,
+        typer.Option("--out", help="Also write the markdown table to this file."),
+    ] = None,
+    config_path: Annotated[
+        Path | None,
+        typer.Option("--config", help="Path to config.toml (default: ./config.toml)."),
+    ] = None,
+) -> None:
+    """Score AST vs RAG vs hybrid retrieval over gold cases (recall@k, MRR, nDCG@k).
+
+    rag/hybrid need the rag extra; the per-commit index is built on the fly from
+    the same PR-head checkout used for the AST pass.
+    """
+    try:
+        config = load_config(config_path)
+        cases = load_gold(gold)
+    except ConfigError as exc:
+        err_console.print(f"[red]config error:[/red] {escape(str(exc))}")
+        raise typer.Exit(code=1) from exc
+    except (OSError, ValueError, KeyError) as exc:
+        err_console.print(f"[red]error reading gold cases:[/red] {escape(str(exc))}")
+        raise typer.Exit(code=1) from exc
+
+    kinds = [k.strip() for k in retrievers.split(",") if k.strip()]
+    try:
+        kind_enums = [RetrieverKind(k) for k in kinds]
+    except ValueError as exc:
+        err_console.print(f"[red]error:[/red] {escape(str(exc))}; use ast,rag,hybrid")
+        raise typer.Exit(code=1) from exc
+    needs_index = any(k in (RetrieverKind.RAG, RetrieverKind.HYBRID) for k in kind_enums)
+
+    token = github_token()
+    if token is None:
+        err_console.print(
+            "[yellow]GITHUB_TOKEN not set; using unauthenticated API (60 requests/hour).[/yellow]"
+        )
+
+    # A budget large enough that ranking is never truncated: the metrics need the
+    # full ordering, not the review-time token cap.
+    eval_config = replace(config, context=replace(config.context, token_budget=10**9))
+    results: dict[str, list[tuple[PRContext, GoldCase]]] = {k: [] for k in kinds}
+    embedder: CodeEmbedder | None = None
+
+    try:
+        with GitHubClient(token, config=config.github) as client:
+            for case in cases:
+                files = parse_diff(client.get_pr_diff(case.repo, case.number))
+                present = gold_queries_for(case, files)
+                if not present:
+                    console.print(
+                        f"[dim]{escape(case.repo)}#{case.number}: no gold file in diff; "
+                        "skipped.[/dim]"
+                    )
+                    continue
+                case_present = replace(case, queries=present)
+                clone_url = f"{config.github.clone_base_url.rstrip('/')}/{case.repo}.git"
+                with pr_head_workspace(
+                    clone_url, case.number, case.sha, token=token
+                ) as workdir:
+                    if needs_index:
+                        if embedder is None:
+                            embedder = CodeEmbedder(
+                                config.rag.embedding_model, device=config.rag.device
+                            )
+                        index_repo(
+                            workdir,
+                            case.repo,
+                            case.sha,
+                            embedder,
+                            cache_root=Path(config.rag.cache_dir),
+                        )
+                    for kind in kind_enums:
+                        retriever = build_retriever(
+                            kind,
+                            repo_root=workdir,
+                            config=eval_config,
+                            repo=case.repo,
+                            sha=case.sha,
+                        )
+                        results[kind.value].append((retriever.retrieve(files), case_present))
+                console.print(
+                    f"scored {escape(case.repo)}#{case.number} "
+                    f"({len(present)} quer{'y' if len(present) == 1 else 'ies'})"
+                )
+    except ImportError as exc:
+        err_console.print(
+            "[red]error:[/red] rag/hybrid need the rag extra; run "
+            '[bold]pip install -e ".[rag]"[/bold]'
+        )
+        raise typer.Exit(code=1) from exc
+    except (GitHubError, WorkspaceError, DiffParseError, RetrievalError, ValueError) as exc:
+        err_console.print(f"[red]error:[/red] {escape(str(exc))}")
+        raise typer.Exit(code=1) from exc
+
+    table = format_markdown({kind: score_retriever(results[kind]) for kind in kinds})
+    console.print()
+    console.print(table)
+    if out is not None:
+        out.write_text(table + "\n", encoding="utf-8")
+        console.print(f"\n[dim]wrote table to {escape(str(out))}[/dim]")
 
 
 @app.command()
