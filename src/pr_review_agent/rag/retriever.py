@@ -116,7 +116,7 @@ class RagRetriever:
                 continue
             per_file.append((file_diff.path, self._file_symbols(file_diff, seen)))
 
-        admitted, total, dropped = _apply_budget(per_file, self._budget)
+        admitted, total, dropped = apply_token_budget(per_file, self._budget)
         file_contexts = tuple(
             FileContext(path, tuple(admitted[path]), ()) for path, _ in per_file
         )
@@ -167,11 +167,15 @@ def _changed_text(file_diff: FileDiff) -> str:
     ).strip()
 
 
-def _apply_budget(
+def apply_token_budget(
     per_file: list[tuple[str, list[SymbolDef]]],
     budget: int,
 ) -> tuple[dict[str, list[SymbolDef]], int, int]:
-    """Keep the highest-ranked (then smallest) symbols within the token budget."""
+    """Keep the highest-ranked (then smallest) symbols within the token budget.
+
+    Shared by the RAG and hybrid retrievers; ranking is by ``reference_count``
+    (the fusion rank stands in for it) then size.
+    """
     flat = [(path, symbol) for path, symbols in per_file for symbol in symbols]
     ranked = sorted(
         flat,

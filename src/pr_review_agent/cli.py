@@ -13,7 +13,6 @@ from rich.table import Table
 
 from pr_review_agent.config import AppConfig, ConfigError, github_token, load_config
 from pr_review_agent.context.models import PRContext
-from pr_review_agent.context.retriever import ContextRetriever
 from pr_review_agent.diff.models import FileDiff, FileStatus
 from pr_review_agent.diff.parser import DiffParseError, parse_diff
 from pr_review_agent.evals.dataset import build_dataset
@@ -39,6 +38,7 @@ from pr_review_agent.models.factory import build_model_client
 from pr_review_agent.models.store import CachingModelClient, CallStore, RunSummary
 from pr_review_agent.rag.embeddings import CodeEmbedder
 from pr_review_agent.rag.index import index_dir, index_exists, index_repo
+from pr_review_agent.retrieval import RetrievalError, RetrieverKind, build_retriever
 from pr_review_agent.review.engine import ReviewEngine
 from pr_review_agent.review.lint import RuffMypyRunner
 from pr_review_agent.review.models import ReviewResult
@@ -114,6 +114,10 @@ def fetch(
 def context(
     repo: Annotated[str, typer.Argument(help="Repository in owner/name form.")],
     number: Annotated[int, typer.Argument(min=1, help="Pull request number.")],
+    retriever_kind: Annotated[
+        RetrieverKind,
+        typer.Option("--retriever", help="Context backend: ast | rag | hybrid."),
+    ] = RetrieverKind.AST,
     config_path: Annotated[
         Path | None,
         typer.Option("--config", help="Path to config.toml (default: ./config.toml)."),
@@ -139,9 +143,18 @@ def context(
         files = parse_diff(diff_text)
         clone_url = f"{config.github.clone_base_url.rstrip('/')}/{repo}.git"
         with pr_head_workspace(clone_url, number, pr.head_sha, token=token) as workdir:
-            retriever = ContextRetriever(workdir, token_budget=config.context.token_budget)
+            retriever = build_retriever(
+                retriever_kind, repo_root=workdir, config=config, repo=repo, sha=pr.head_sha
+            )
             pr_context = retriever.retrieve(files)
-    except (GitHubError, WorkspaceError, DiffParseError, ValueError) as exc:
+    except (
+        GitHubError,
+        WorkspaceError,
+        DiffParseError,
+        RetrievalError,
+        ImportError,
+        ValueError,
+    ) as exc:
         err_console.print(f"[red]error:[/red] {escape(str(exc))}")
         raise typer.Exit(code=1) from exc
 
@@ -220,6 +233,10 @@ def review(
         str | None,
         typer.Option("--backend", help="Override the [models] backend (gemini|anthropic|ollama)."),
     ] = None,
+    retriever_kind: Annotated[
+        RetrieverKind,
+        typer.Option("--retriever", help="Context backend: ast | rag | hybrid."),
+    ] = RetrieverKind.AST,
     config_path: Annotated[
         Path | None,
         typer.Option("--config", help="Path to config.toml (default: ./config.toml)."),
@@ -256,7 +273,9 @@ def review(
                     return
             diff_text = client.get_pr_diff(repo, number)
             files = parse_diff(diff_text)
-            result, summary = _run_engine(config, repo, number, pr, files, token, backend)
+            result, summary = _run_engine(
+                config, repo, number, pr, files, token, backend, retriever_kind
+            )
             if not post:
                 _print_review(pr, result, summary, posted=False)
                 return
@@ -280,6 +299,8 @@ def review(
         DiffParseError,
         ModelError,
         ConfigError,
+        RetrievalError,
+        ImportError,
         ValueError,
     ) as exc:
         err_console.print(f"[red]error:[/red] {escape(str(exc))}")
@@ -294,6 +315,7 @@ def _run_engine(
     files: list[FileDiff],
     token: str | None,
     backend: str | None,
+    retriever_kind: RetrieverKind,
 ) -> tuple[ReviewResult, RunSummary | None]:
     clone_url = f"{config.github.clone_base_url.rstrip('/')}/{repo}.git"
     ledger_run_id = (
@@ -301,7 +323,9 @@ def _run_engine(
     )
     model_client = build_model_client(backend or config.models.backend, config.models)
     with pr_head_workspace(clone_url, number, pr.head_sha, token=token) as workdir:
-        retriever = ContextRetriever(workdir, token_budget=config.context.token_budget)
+        retriever = build_retriever(
+            retriever_kind, repo_root=workdir, config=config, repo=repo, sha=pr.head_sha
+        )
         pr_context = retriever.retrieve(files)
         with CallStore(Path(config.models.db_path)) as store:
             caching = CachingModelClient(

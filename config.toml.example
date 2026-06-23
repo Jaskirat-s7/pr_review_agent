@@ -26,6 +26,17 @@ max_sleep_seconds = 120.0
 # (~4 chars/token estimate; most-referenced symbols are kept first).
 token_budget = 6000
 
+[rag]
+# Retrieval backend for `pra review`/`pra context` is chosen per-run with
+# --retriever {ast,rag,hybrid} (default: ast). rag and hybrid need the `rag`
+# extra and an index built with `pra index` for the reviewed commit.
+# Where built indexes are cached (keyed by repo + commit SHA).
+cache_dir = ".pra/rag"
+# Local code-embedding model (downloaded once, runs offline).
+embedding_model = "jinaai/jina-embeddings-v2-base-code"
+# sentence-transformers device: "cpu", "cuda", or "mps".
+device = "cpu"
+
 [models]
 # Agent-loop backend: gemini (default) | gemini-pro | anthropic | ollama | cerebras | claude-code.
 backend = "gemini"
