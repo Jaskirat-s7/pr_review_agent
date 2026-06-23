@@ -17,6 +17,38 @@ class ModelError(Exception):
     """A model backend request failed."""
 
 
+class DailyQuotaError(ModelError):
+    """A per-*day* quota was exhausted.
+
+    Distinct from transient per-minute throttling: the window resets in hours,
+    not seconds, so retrying within a run is pure waste. The eval loop catches
+    this to stop cleanly and resume later — the model-call cache replays the
+    work already done at $0.
+    """
+
+
+class ContextLimitError(ModelError):
+    """The estimated prompt would exceed the model's context window.
+
+    Raised *before* the API call so an oversized PR fails loud (with the token
+    count) rather than being silently truncated by the backend. Carries the
+    numbers so the caller, which knows the PR number, can log and categorize.
+    """
+
+    def __init__(
+        self, *, estimated_prompt_tokens: int, max_tokens: int, limit: int, model: str
+    ) -> None:
+        self.estimated_prompt_tokens = estimated_prompt_tokens
+        self.max_tokens = max_tokens
+        self.limit = limit
+        self.model_name = model
+        super().__init__(
+            f"estimated prompt {estimated_prompt_tokens} + max_tokens {max_tokens} "
+            f"= {estimated_prompt_tokens + max_tokens} tokens exceeds {model} "
+            f"context limit {limit}"
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class ModelMessage:
     """One conversation turn."""

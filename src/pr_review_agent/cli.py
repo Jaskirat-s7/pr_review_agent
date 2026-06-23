@@ -23,16 +23,18 @@ from pr_review_agent.evals.run import build_run_result, review_case
 from pr_review_agent.evals.schema import (
     CASES_FILE,
     EvalDataError,
+    RunResult,
     judgments_path,
     load_cases,
     load_runs,
+    load_runs_if_present,
     runs_path,
     sample_path,
     write_jsonl,
 )
 from pr_review_agent.github.client import GitHubClient, GitHubError
 from pr_review_agent.github.models import PullRequest
-from pr_review_agent.models.base import ModelError
+from pr_review_agent.models.base import ContextLimitError, DailyQuotaError, ModelError
 from pr_review_agent.models.factory import build_model_client
 from pr_review_agent.models.store import CachingModelClient, CallStore, RunSummary
 from pr_review_agent.rag.embeddings import CodeEmbedder
@@ -449,9 +451,28 @@ def eval_run(
         raise typer.Exit(code=1) from exc
 
     timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    results = []
+    out_path = runs_path(dataset_dir, backend_name)
+    # Resume: completed cases on disk are reused so a re-run after an
+    # interruption (a daily-quota stop, a crash) doesn't redo them.
+    results_by_key = {(r.repo, r.number): r for r in load_runs_if_present(out_path)}
+    already = sum(1 for c in cases if (c.repo, c.number) in results_by_key)
+    if already:
+        console.print(f"[dim]resuming: {already}/{len(cases)} case(s) already complete.[/dim]")
+
+    def persist() -> None:
+        # Write after each case in dataset order, so an interruption never
+        # loses completed work (the old code wrote only at the very end).
+        ordered = [
+            results_by_key[(c.repo, c.number)]
+            for c in cases
+            if (c.repo, c.number) in results_by_key
+        ]
+        write_jsonl(out_path, ordered)
+
     with CallStore(Path(config.models.db_path)) as store:
         for index, case in enumerate(cases, 1):
+            if (case.repo, case.number) in results_by_key:
+                continue
             run_id = f"eval:{case.repo}#{case.number} via {backend_name} {timestamp}"
             caching = CachingModelClient(inner, store, run_id=run_id, pricing=config.models.pricing)
             try:
@@ -463,6 +484,39 @@ def eval_run(
                     clone_url=f"{config.github.clone_base_url.rstrip('/')}/{case.repo}.git",
                     token=token,
                 )
+            except DailyQuotaError as exc:
+                persist()
+                err_console.print(
+                    f"[yellow]daily quota hit on {escape(case.repo)}#{case.number}; "
+                    f"stopping.[/yellow] {escape(str(exc))}"
+                )
+                console.print(
+                    f"[dim]{len(results_by_key)} case(s) saved to "
+                    f"{escape(str(out_path))}; re-run this command after the quota "
+                    "resets to continue (completed calls replay from cache at $0).[/dim]"
+                )
+                raise typer.Exit(code=0) from exc
+            except ContextLimitError as exc:
+                # Skip-and-record: keep the case visible as its own category
+                # rather than dropping it from the denominator.
+                results_by_key[(case.repo, case.number)] = RunResult(
+                    repo=case.repo,
+                    number=case.number,
+                    review_sha=case.review_sha,
+                    backend=backend_name,
+                    model=inner.model,
+                    comments=(),
+                    cost_usd=0.0,
+                    failures=0,
+                    status="context_overflow",
+                    skip_reason=str(exc),
+                )
+                persist()
+                console.print(
+                    f"[{index}/{len(cases)}] {escape(case.repo)}#{case.number}: "
+                    f"[yellow]skipped (context overflow):[/yellow] {escape(str(exc))}"
+                )
+                continue
             except (ModelError, DiffParseError) as exc:
                 err_console.print(
                     f"[red]error on {escape(case.repo)}#{case.number}:[/red] {escape(str(exc))}"
@@ -470,20 +524,21 @@ def eval_run(
                 raise typer.Exit(code=1) from exc
             summary = next((s for s in store.run_summaries() if s.run_id == run_id), None)
             cost = summary.cost_usd if summary is not None else 0.0
-            results.append(
-                build_run_result(
-                    case, review_result, backend=backend_name, model=inner.model, cost_usd=cost
-                )
+            results_by_key[(case.repo, case.number)] = build_run_result(
+                case, review_result, backend=backend_name, model=inner.model, cost_usd=cost
             )
+            persist()
             console.print(
                 f"[{index}/{len(cases)}] {escape(case.repo)}#{case.number}: "
                 f"{len(review_result.comments)} comment(s), "
                 f"{review_result.stats.triage_failures + review_result.stats.review_failures} "
                 f"failure(s), ~${cost:.4f}"
             )
-    count = write_jsonl(runs_path(dataset_dir, backend_name), results)
+    persist()
+    overflow = sum(1 for r in results_by_key.values() if r.status == "context_overflow")
     console.print(
-        f"Wrote {count} run result(s) to {escape(str(runs_path(dataset_dir, backend_name)))}"
+        f"Wrote {len(results_by_key)} run result(s) to {escape(str(out_path))}"
+        + (f" ({overflow} skipped for context overflow)" if overflow else "")
     )
 
 

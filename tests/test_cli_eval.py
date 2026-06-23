@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -26,6 +27,14 @@ from pr_review_agent.evals.schema import (
 from pr_review_agent.github.models import PullRequest, ReviewComment
 
 runner = CliRunner()
+
+
+@contextmanager
+def _yield_empty_workspace(clone_url: str, sha: str, *, token: str | None = None) -> Iterator[Path]:
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        yield Path(d)
 
 
 class _StubGitHub:
@@ -176,6 +185,130 @@ def test_run_cli_writes_run_results(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert run.backend == "gemini"
     assert run.comments[0].line == 5
     assert run.comments[0].has_context
+
+
+def _single_case_dataset(tmp_path: Path) -> EvalCase:
+    app_source = 'from helpers import greet\n\n\ndef run() -> None:\n    greet("hi")\n'
+    lines = app_source.splitlines()
+    diff = (
+        "diff --git a/app.py b/app.py\nnew file mode 100644\n--- /dev/null\n+++ b/app.py\n"
+        f"@@ -0,0 +1,{len(lines)} @@\n" + "\n".join(f"+{x}" for x in lines) + "\n"
+    )
+    case = EvalCase(
+        repo="octo/widgets",
+        number=7,
+        title="t",
+        review_sha="a" * 40,
+        reconstructed=True,
+        diff=diff,
+        human_comments=(),
+    )
+    write_jsonl(tmp_path / CASES_FILE, [case])
+    return case
+
+
+class _RaisingModel:
+    """A model backend whose first call raises a chosen exception."""
+
+    def __init__(self, exc: Exception) -> None:
+        self._exc = exc
+        self.calls = 0
+
+    @property
+    def model(self) -> str:
+        return "qwen-3-32b"
+
+    def complete(self, *args: object, **kwargs: object) -> object:
+        self.calls += 1
+        raise self._exc
+
+
+def test_run_cli_resumes_and_skips_completed_cases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from pr_review_agent.models.base import DailyQuotaError
+
+    _single_case_dataset(tmp_path)
+    # Pre-seed a completed run for the only case.
+    existing = RunResult(
+        repo="octo/widgets",
+        number=7,
+        review_sha="a" * 40,
+        backend="cerebras",
+        model="qwen-3-32b",
+        comments=(),
+        cost_usd=0.0,
+        failures=0,
+    )
+    write_jsonl(runs_path(tmp_path, "cerebras"), [existing])
+
+    # If the loop tried to run the case it would raise; resume must skip it.
+    model = _RaisingModel(DailyQuotaError("should not be called"))
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setattr(cli, "build_model_client", lambda backend, config: model)
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(
+        cli.app, ["eval", "run", str(tmp_path), "--backend", "cerebras"], env={"COLUMNS": "200"}
+    )
+    assert result.exit_code == 0, result.output
+    assert "resuming: 1/1" in result.output
+    assert model.calls == 0  # completed case was not re-run
+
+
+def test_run_cli_records_context_overflow_and_continues(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from pr_review_agent.evals.schema import load_runs
+    from pr_review_agent.models.base import ContextLimitError
+
+    _single_case_dataset(tmp_path)
+    exc = ContextLimitError(
+        estimated_prompt_tokens=9000, max_tokens=128, limit=8192, model="qwen-3-32b"
+    )
+    model = _RaisingModel(exc)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setattr(cli, "build_model_client", lambda backend, config: model)
+    monkeypatch.setattr(
+        "pr_review_agent.evals.run.commit_workspace",
+        _yield_empty_workspace,
+    )
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(
+        cli.app, ["eval", "run", str(tmp_path), "--backend", "cerebras"], env={"COLUMNS": "200"}
+    )
+    assert result.exit_code == 0, result.output
+    assert "context overflow" in result.output
+    (run,) = load_runs(runs_path(tmp_path, "cerebras"))
+    assert run.status == "context_overflow"
+    assert run.comments == ()
+    assert "8192" in run.skip_reason
+
+
+def test_run_cli_daily_quota_stops_resumable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from pr_review_agent.evals.schema import load_runs
+    from pr_review_agent.models.base import DailyQuotaError
+
+    _single_case_dataset(tmp_path)
+    model = _RaisingModel(DailyQuotaError("Cerebras daily quota exhausted"))
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setattr(cli, "build_model_client", lambda backend, config: model)
+    monkeypatch.setattr(
+        "pr_review_agent.evals.run.commit_workspace",
+        _yield_empty_workspace,
+    )
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(
+        cli.app, ["eval", "run", str(tmp_path), "--backend", "cerebras"], env={"COLUMNS": "200"}
+    )
+    assert result.exit_code == 0, result.output  # resumable, not a hard failure
+    assert "daily quota hit" in result.output
+    # The (empty) results file is persisted so a re-run resumes from cache.
+    assert load_runs(runs_path(tmp_path, "cerebras")) == []
 
 
 def test_report_cli_writes_markdown(tmp_path: Path) -> None:

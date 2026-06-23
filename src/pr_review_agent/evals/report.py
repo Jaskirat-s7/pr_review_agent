@@ -56,6 +56,7 @@ class BackendMetrics:
     backend: str
     cases: int = 0
     failure_cases: int = 0  # cases whose run had triage/review failures
+    overflow_cases: int = 0  # cases skipped for context overflow (not judged)
     overall: _RecallCounts = field(default_factory=_RecallCounts)
     reconstructed: _RecallCounts = field(default_factory=_RecallCounts)
     fallback: _RecallCounts = field(default_factory=_RecallCounts)
@@ -81,6 +82,7 @@ def compute_metrics(
     cases_by_key = {(c.repo, c.number): c for c in cases}
     runs_by_key = {(r.repo, r.number): r for r in runs}
     metrics = BackendMetrics(backend=backend)
+    metrics.overflow_cases = sum(1 for r in runs if r.status != "ok")
     for judgment in judgments:
         key = (judgment.repo, judgment.number)
         case = cases_by_key.get(key)
@@ -154,10 +156,10 @@ def generate_report(dataset_dir: Path, *, ceiling_backend: str = DEFAULT_CEILING
             "",
             "Cost-per-PR columns are API-list-equivalent for the system under "
             "test — what each run would cost at metered API rates. Actual "
-            "marginal spend for this eval was ~$0: the Gemini runs used the "
-            "free tier and the Claude Code judge ran on a subscription "
-            "(recorded at $0 — the ledger tracks API spend, which these "
-            "calls do not incur).",
+            "marginal spend for this eval was ~$0: the free-tier runs (Gemini, "
+            "Cerebras) and the Claude Code judge (a subscription) are recorded "
+            "at list-equivalent or $0 — the ledger tracks API spend, which "
+            "these calls do not incur.",
             "",
         ]
     )
@@ -196,6 +198,10 @@ def _headline_table(all_metrics: list[BackendMetrics], ceiling_backend: str) -> 
             [f"{m.plausible / m.cases:.2f}" if m.cases else "n/a" for m in all_metrics],
         ),
         ("cases with model failures", [str(m.failure_cases) for m in all_metrics]),
+        (
+            "cases skipped (context overflow)",
+            [str(m.overflow_cases) for m in all_metrics],
+        ),
         (
             "cost per PR (USD)",
             [f"${m.cost_total / m.cases:.4f}" if m.cases else "n/a" for m in all_metrics],

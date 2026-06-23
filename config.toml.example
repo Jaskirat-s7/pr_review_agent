@@ -5,6 +5,7 @@
 #   GITHUB_TOKEN       - GitHub API token (classic or fine-grained)
 #   GEMINI_API_KEY     - Google Gemini API key        (Phase 3+)
 #   ANTHROPIC_API_KEY  - Anthropic API key            (Phase 5+)
+#   CEREBRAS_API_KEY   - Cerebras API key (csk-...)   (OpenAI-compatible)
 
 [github]
 base_url = "https://api.github.com"
@@ -26,7 +27,7 @@ max_sleep_seconds = 120.0
 token_budget = 6000
 
 [models]
-# Agent-loop backend: gemini (default) | gemini-pro | anthropic | ollama | claude-code.
+# Agent-loop backend: gemini (default) | gemini-pro | anthropic | ollama | cerebras | claude-code.
 backend = "gemini"
 # SQLite DB holding the response cache and the per-call cost ledger.
 db_path = "pra.sqlite3"
@@ -35,6 +36,13 @@ gemini_pro_model = "gemini-2.5-pro"    # eval ceiling baseline (same free tier)
 anthropic_model = "claude-opus-4-8"
 ollama_base_url = "http://localhost:11434"
 ollama_model = "qwen2.5-coder:7b"
+cerebras_base_url = "https://api.cerebras.ai/v1"
+# Discovery preference order; the first id the API actually offers is used
+# (Cerebras rotates/deprecates models, so we don't hardcode one).
+cerebras_models = ["qwen-3-32b", "llama-4-scout"]
+# Free-tier context window (prompt + completion), in tokens. Oversized PRs are
+# skipped-and-recorded as context_overflow rather than silently truncated.
+cerebras_context_limit = 8192
 # Empty = let the `claude` CLI choose the plan's default model.
 claude_code_model = ""
 # Eval judge backend. claude-code shells out to the `claude` CLI on a
@@ -66,6 +74,17 @@ output_per_mtok = 0.0
 [models.pricing."qwen2.5-coder:7b"]
 input_per_mtok = 0.0
 output_per_mtok = 0.0
+
+# Cerebras free-tier actual spend is $0; these list prices keep the cost-per-PR
+# column API-list-equivalent (the cost-at-scale story). Confirm against current
+# Cerebras pricing when bumping prices_as_of.
+[models.pricing."qwen-3-32b"]
+input_per_mtok = 0.40
+output_per_mtok = 0.80
+
+[models.pricing."llama-4-scout"]
+input_per_mtok = 0.65
+output_per_mtok = 0.85
 
 [review]
 # Maximum comments posted per PR; the highest-severity, highest-confidence

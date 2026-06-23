@@ -6,10 +6,18 @@ import json
 from collections.abc import Sequence
 from pathlib import Path
 
+import pytest
+
 from pr_review_agent.config import ReviewConfig
 from pr_review_agent.context.models import FileContext, PRContext, SymbolDef, SymbolKind
 from pr_review_agent.diff.parser import parse_diff
-from pr_review_agent.models.base import ModelMessage, ModelResponse
+from pr_review_agent.models.base import (
+    ContextLimitError,
+    DailyQuotaError,
+    ModelError,
+    ModelMessage,
+    ModelResponse,
+)
 from pr_review_agent.review.engine import ReviewEngine, render_hunk
 from pr_review_agent.review.models import Severity
 
@@ -95,6 +103,51 @@ def engine(client: ScriptedClient, **overrides: float | int) -> ReviewEngine:
         ),
     )
     return ReviewEngine(client, config=config)
+
+
+class _RaisingClient:
+    """A ModelClient whose triage call raises a chosen exception."""
+
+    def __init__(self, exc: Exception) -> None:
+        self._exc = exc
+
+    @property
+    def model(self) -> str:
+        return "raising"
+
+    def complete(
+        self,
+        system: str,
+        messages: Sequence[ModelMessage],
+        *,
+        max_tokens: int = 1024,
+        purpose: str = "",
+    ) -> ModelResponse:
+        raise self._exc
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        DailyQuotaError("daily cap"),
+        ContextLimitError(
+            estimated_prompt_tokens=9000, max_tokens=128, limit=8192, model="qwen-3-32b"
+        ),
+    ],
+)
+def test_engine_propagates_daily_and_context_errors(exc: ModelError) -> None:
+    # These must abort the case, not be swallowed into the per-hunk failure
+    # count (which would burn a daily cap and hide overflow).
+    eng = ReviewEngine(_RaisingClient(exc), config=ReviewConfig())
+    with pytest.raises(type(exc)):
+        eng.review(parse_diff(DIFF), context_with_symbols())
+
+
+def test_engine_counts_generic_model_error_as_failure() -> None:
+    eng = ReviewEngine(_RaisingClient(ModelError("transient parse")), config=ReviewConfig())
+    result = eng.review(parse_diff(DIFF), context_with_symbols())
+    assert result.stats.triage_failures == result.stats.hunks_total
+    assert result.comments == ()
 
 
 def test_review_runs_only_on_flagged_hunks_and_gates_confidence() -> None:

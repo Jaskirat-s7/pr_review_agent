@@ -67,7 +67,14 @@ DEFAULT_PRICING: Mapping[str, ModelPricing] = {
     # Claude Code judge runs on a subscription, not metered API spend.
     "claude-code": ModelPricing(input_per_mtok=0.0, output_per_mtok=0.0),
     "qwen2.5-coder:7b": ModelPricing(input_per_mtok=0.0, output_per_mtok=0.0),
+    # Cerebras: free-tier actual spend is $0, but these list prices keep the
+    # cost-per-PR column API-list-equivalent (the cost-at-scale story). Confirm
+    # against current Cerebras pricing when bumping prices_as_of.
+    "qwen-3-32b": ModelPricing(input_per_mtok=0.40, output_per_mtok=0.80),
+    "llama-4-scout": ModelPricing(input_per_mtok=0.65, output_per_mtok=0.85),
 }
+
+DEFAULT_CEREBRAS_MODELS: tuple[str, ...] = ("qwen-3-32b", "llama-4-scout")
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +88,11 @@ class ModelsConfig:
     anthropic_model: str = "claude-opus-4-8"
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "qwen2.5-coder:7b"
+    cerebras_base_url: str = "https://api.cerebras.ai/v1"
+    # Discovery preference order; the first model the API offers is used.
+    cerebras_models: tuple[str, ...] = DEFAULT_CEREBRAS_MODELS
+    # Free-tier context window (prompt + completion), in tokens.
+    cerebras_context_limit: int = 8192
     # Empty = let the claude CLI pick the plan's default model.
     claude_code_model: str = ""
     judge_backend: str = "claude-code"  # eval judge backend
@@ -152,6 +164,11 @@ def anthropic_api_key() -> str | None:
     return os.environ.get("ANTHROPIC_API_KEY") or None
 
 
+def cerebras_api_key() -> str | None:
+    """Return the Cerebras API key from the environment, if set and non-empty."""
+    return os.environ.get("CEREBRAS_API_KEY") or None
+
+
 def _github_config(raw: object, *, source: Path) -> GitHubConfig:
     table = _expect_table(raw, "github", source, GitHubConfig)
     defaults = GitHubConfig()
@@ -220,6 +237,15 @@ def _models_config(raw: object, *, source: Path) -> ModelsConfig:
             table, "ollama_base_url", str, defaults.ollama_base_url, source, section
         ),
         ollama_model=_expect(table, "ollama_model", str, defaults.ollama_model, source, section),
+        cerebras_base_url=_expect(
+            table, "cerebras_base_url", str, defaults.cerebras_base_url, source, section
+        ),
+        cerebras_models=_expect_str_tuple(
+            table, "cerebras_models", defaults.cerebras_models, source, section
+        ),
+        cerebras_context_limit=_expect(
+            table, "cerebras_context_limit", int, defaults.cerebras_context_limit, source, section
+        ),
         claude_code_model=_expect(
             table, "claude_code_model", str, defaults.claude_code_model, source, section
         ),
@@ -288,6 +314,19 @@ def _expect(
     if (isinstance(value, bool) and typ is not bool) or not isinstance(value, typ):
         raise ConfigError(f"'{key}' in [{section}] of {source} must be a {typ.__name__}")
     return value
+
+
+def _expect_str_tuple(
+    raw: dict[str, Any], key: str, default: tuple[str, ...], source: Path, section: str
+) -> tuple[str, ...]:
+    value = raw.get(key, default)
+    if isinstance(value, tuple):
+        return value
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ConfigError(f"'{key}' in [{section}] of {source} must be a list of strings")
+    if not value:
+        raise ConfigError(f"'{key}' in [{section}] of {source} must not be empty")
+    return tuple(value)
 
 
 def _expect_number(

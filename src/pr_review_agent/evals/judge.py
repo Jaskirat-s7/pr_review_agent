@@ -64,6 +64,14 @@ class EvalJudge:
             if run is None:
                 logger.warning("no run result for %s#%d; skipping", case.repo, case.number)
                 continue
+            if run.status != "ok":
+                # Skipped-and-recorded cases (e.g. context_overflow) were never
+                # reviewed; judging their empty output as all-misses would
+                # corrupt recall. They surface as their own report category.
+                logger.info(
+                    "%s#%d skipped (%s); not judged", case.repo, case.number, run.status
+                )
+                continue
             # Space out cases so a 50-PR batch doesn't burst against the
             # Claude Code 5-hour usage window. A run is resumable: judgments
             # are written per backend, so a partial batch can be re-run.

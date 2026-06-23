@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
-from pr_review_agent.config import ConfigError, ModelsConfig, anthropic_api_key, gemini_api_key
+from pr_review_agent.config import (
+    ConfigError,
+    ModelsConfig,
+    anthropic_api_key,
+    cerebras_api_key,
+    gemini_api_key,
+)
 from pr_review_agent.models.anthropic_client import AnthropicClient
 from pr_review_agent.models.base import ModelClient
+from pr_review_agent.models.cerebras import CerebrasClient
 from pr_review_agent.models.claude_code import ClaudeCodeClient
 from pr_review_agent.models.gemini import GeminiClient
 from pr_review_agent.models.ollama import OllamaClient
 
-BACKENDS = ("gemini", "gemini-pro", "anthropic", "ollama", "claude-code")
+BACKENDS = ("gemini", "gemini-pro", "anthropic", "ollama", "cerebras", "claude-code")
 
 
 def build_model_client(backend: str, config: ModelsConfig) -> ModelClient:
@@ -27,6 +34,16 @@ def build_model_client(backend: str, config: ModelsConfig) -> ModelClient:
         return AnthropicClient(key, config.anthropic_model)
     if backend == "ollama":
         return OllamaClient(config.ollama_base_url, config.ollama_model)
+    if backend == "cerebras":
+        key = cerebras_api_key()
+        if key is None:
+            raise ConfigError("CEREBRAS_API_KEY is not set")
+        return CerebrasClient(
+            key,
+            base_url=config.cerebras_base_url,
+            model_preferences=config.cerebras_models,
+            context_limit=config.cerebras_context_limit,
+        )
     if backend == "claude-code":
         return ClaudeCodeClient(claude_model=config.claude_code_model)
     raise ConfigError(f"unknown model backend {backend!r}; expected one of {', '.join(BACKENDS)}")

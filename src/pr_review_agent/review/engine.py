@@ -15,7 +15,13 @@ from pr_review_agent.config import ReviewConfig
 from pr_review_agent.context.models import FileContext, PRContext
 from pr_review_agent.diff.models import FileDiff, FileStatus, Hunk, LineKind
 from pr_review_agent.jsonutil import parse_model_json
-from pr_review_agent.models.base import ModelClient, ModelError, ModelMessage
+from pr_review_agent.models.base import (
+    ContextLimitError,
+    DailyQuotaError,
+    ModelClient,
+    ModelError,
+    ModelMessage,
+)
 from pr_review_agent.prompts import load_prompt
 from pr_review_agent.review.lint import LintRunner
 from pr_review_agent.review.models import AgentComment, ReviewResult, ReviewStats, Severity
@@ -136,6 +142,10 @@ class ReviewEngine:
                 max_tokens=_TRIAGE_MAX_TOKENS,
                 purpose="triage",
             )
+        except (DailyQuotaError, ContextLimitError):
+            # Batch-level (daily cap) and case-level (oversized PR) signals must
+            # not be swallowed as a per-hunk failure — they abort the case.
+            raise
         except ModelError as exc:
             logger.warning("triage call failed for %s: %s", file_diff.path, exc)
             return None
@@ -169,6 +179,8 @@ class ReviewEngine:
                 max_tokens=_REVIEW_MAX_TOKENS,
                 purpose="review",
             )
+        except (DailyQuotaError, ContextLimitError):
+            raise
         except ModelError as exc:
             logger.warning("review call failed for %s: %s", file_diff.path, exc)
             return None

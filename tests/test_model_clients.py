@@ -11,7 +11,7 @@ import httpx
 import pytest
 
 from pr_review_agent.models.anthropic_client import AnthropicClient
-from pr_review_agent.models.base import ModelError, ModelMessage
+from pr_review_agent.models.base import DailyQuotaError, ModelError, ModelMessage
 from pr_review_agent.models.gemini import GeminiClient
 from pr_review_agent.models.ollama import OllamaClient
 
@@ -194,6 +194,27 @@ def test_gemini_exponential_backoff_without_retry_hint() -> None:
     response = client.complete("sys", MESSAGES)
     assert response.text == "ok"
     assert sleeps == [1.0, 2.0]  # 2**0 floored to 1.0, then 2**1
+
+
+def test_gemini_daily_quota_fails_fast_without_retry() -> None:
+    calls = 0
+
+    def generate_content(**kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        # The free-tier daily cap: quotaId names a per-day quota.
+        raise _RateLimitError(
+            "429 RESOURCE_EXHAUSTED quotaId GenerateRequestsPerDayPerProjectPerModel-FreeTier",
+            code=429,
+        )
+
+    stub = SimpleNamespace(models=SimpleNamespace(generate_content=generate_content))
+    sleeps: list[float] = []
+    client = GeminiClient("key", client=cast("Any", stub), sleep=sleeps.append)
+    with pytest.raises(DailyQuotaError, match="daily quota"):
+        client.complete("sys", MESSAGES)
+    assert calls == 1  # no retries burned on a daily cap
+    assert sleeps == []
 
 
 def test_gemini_retries_exhausted_raises() -> None:

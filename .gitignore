@@ -21,6 +21,9 @@ config.toml
 *.sqlite3
 *.db
 
+# Build/run logs (eval dataset keeps its .jsonl, not its logs)
+*.log
+
 # Editors / OS
 .idea/
 .vscode/
@@ -28,3 +31,4 @@ config.toml
 
 # Local Claude Code settings
 .claude/
+.secrets

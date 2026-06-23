@@ -86,6 +86,12 @@ class RunResult:
     comments: tuple[RunComment, ...]
     cost_usd: float
     failures: int  # triage+review failures; nonzero flags corrupted recall
+    # "ok" = reviewed normally. "context_overflow" = the diff exceeded the
+    # backend's context window and was skipped-and-recorded (not judged, not
+    # counted in recall) so it stays visible rather than vanishing from the
+    # denominator. ``skip_reason`` carries the human-readable detail.
+    status: str = "ok"
+    skip_reason: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,9 +180,20 @@ def load_runs(path: Path) -> list[RunResult]:
             ),
             cost_usd=float(obj.get("cost_usd", 0.0)),
             failures=int(obj.get("failures", 0)),
+            status=str(obj.get("status", "ok")),
+            skip_reason=str(obj.get("skip_reason", "")),
         )
         for obj in _read_jsonl(path)
     ]
+
+
+def load_runs_if_present(path: Path) -> list[RunResult]:
+    """Like :func:`load_runs`, but an absent file yields no results.
+
+    Used by ``eval run`` to resume: completed cases on disk are reused so a
+    re-run after an interruption (a daily-quota stop, a crash) skips them.
+    """
+    return load_runs(path) if path.is_file() else []
 
 
 def load_judgments(path: Path) -> list[CaseJudgment]:
