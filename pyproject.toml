@@ -28,7 +28,11 @@ dev = [
 # runtime by sentence-transformers; full-text search uses LanceDB's tantivy.
 rag = [
     "lancedb>=0.13",
-    "sentence-transformers>=3.0",
+    "sentence-transformers>=3.0,<4",
+    # jina-embeddings-v2-base-code ships custom modeling code that imports
+    # transformers.pytorch_utils.find_pruneable_heads_and_indices, dropped in
+    # transformers 5. Pin to the 4.x line until we move to a 5-compatible model.
+    "transformers>=4.38,<5",
 ]
 
 [project.scripts]
