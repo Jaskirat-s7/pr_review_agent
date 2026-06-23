@@ -42,6 +42,15 @@ class ContextConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class RagConfig:
+    """Settings for the RAG retrieval path (index location and local models)."""
+
+    cache_dir: str = ".pra/rag"
+    embedding_model: str = "jinaai/jina-embeddings-v2-base-code"
+    device: str = "cpu"  # passed to sentence-transformers; e.g. "cuda", "mps"
+
+
+@dataclass(frozen=True, slots=True)
 class ModelPricing:
     """Per-million-token prices for one model."""
 
@@ -99,6 +108,7 @@ class AppConfig:
     context: ContextConfig = field(default_factory=ContextConfig)
     models: ModelsConfig = field(default_factory=ModelsConfig)
     review: ReviewConfig = field(default_factory=ReviewConfig)
+    rag: RagConfig = field(default_factory=RagConfig)
 
 
 def load_config(path: Path | None = None) -> AppConfig:
@@ -123,6 +133,7 @@ def load_config(path: Path | None = None) -> AppConfig:
         context=_context_config(raw.get("context", {}), source=path),
         models=_models_config(raw.get("models", {}), source=path),
         review=_review_config(raw.get("review", {}), source=path),
+        rag=_rag_config(raw.get("rag", {}), source=path),
     )
 
 
@@ -173,6 +184,19 @@ def _context_config(raw: object, *, source: Path) -> ContextConfig:
     defaults = ContextConfig()
     return ContextConfig(
         token_budget=_expect(table, "token_budget", int, defaults.token_budget, source, "context"),
+    )
+
+
+def _rag_config(raw: object, *, source: Path) -> RagConfig:
+    table = _expect_table(raw, "rag", source, RagConfig)
+    defaults = RagConfig()
+    section = "rag"
+    return RagConfig(
+        cache_dir=_expect(table, "cache_dir", str, defaults.cache_dir, source, section),
+        embedding_model=_expect(
+            table, "embedding_model", str, defaults.embedding_model, source, section
+        ),
+        device=_expect(table, "device", str, defaults.device, source, section),
     )
 
 

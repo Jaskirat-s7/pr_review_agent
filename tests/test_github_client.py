@@ -337,6 +337,26 @@ def test_list_pull_requests_passes_params_and_yields_models() -> None:
     assert pr.updated_at == "2026-02-02T00:00:00Z"
 
 
+def test_resolve_commit_sha() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/repos/octo/widgets/commits/HEAD"
+        return httpx.Response(200, json={"sha": "abc123def456"})
+
+    client, _ = make_client(handler)
+    with client:
+        assert client.resolve_commit_sha("octo/widgets") == "abc123def456"
+
+
+def test_resolve_commit_sha_missing_field_errors() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/repos/octo/widgets/commits/v1.0"
+        return httpx.Response(200, json={})
+
+    client, _ = make_client(handler)
+    with client, pytest.raises(GitHubAPIError, match="could not resolve"):
+        client.resolve_commit_sha("octo/widgets", "v1.0")
+
+
 @pytest.mark.parametrize("bad_repo", ["plainname", "owner/", "/repo", "a/b/c", ""])
 def test_invalid_repo_is_rejected(bad_repo: str) -> None:
     def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover

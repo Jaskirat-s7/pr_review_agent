@@ -148,6 +148,21 @@ class GitHubClient:
         )
         return response.text
 
+    def resolve_commit_sha(self, repo: str, ref: str = "HEAD") -> str:
+        """Resolve a ref (branch, tag, or SHA) to a full commit SHA.
+
+        ``HEAD`` resolves the repository's default-branch head.
+        """
+        response = self._request("GET", f"/repos/{_validate_repo(repo)}/commits/{ref}")
+        sha = _json_object(response).get("sha")
+        if not isinstance(sha, str) or not sha:
+            raise GitHubAPIError(
+                f"could not resolve {ref!r} to a commit",
+                status_code=response.status_code,
+                url=str(response.request.url),
+            )
+        return sha
+
     def get_authenticated_user(self) -> str:
         """Return the login of the token's identity (the bot account)."""
         response = self._request("GET", "/user")

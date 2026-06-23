@@ -35,6 +35,8 @@ from pr_review_agent.github.models import PullRequest
 from pr_review_agent.models.base import ModelError
 from pr_review_agent.models.factory import build_model_client
 from pr_review_agent.models.store import CachingModelClient, CallStore, RunSummary
+from pr_review_agent.rag.embeddings import CodeEmbedder
+from pr_review_agent.rag.index import index_dir, index_exists, index_repo
 from pr_review_agent.review.engine import ReviewEngine
 from pr_review_agent.review.lint import RuffMypyRunner
 from pr_review_agent.review.models import ReviewResult
@@ -44,7 +46,7 @@ from pr_review_agent.review.post import (
     run_key,
     to_draft_comments,
 )
-from pr_review_agent.workspace import WorkspaceError, pr_head_workspace
+from pr_review_agent.workspace import WorkspaceError, commit_workspace, pr_head_workspace
 
 app = typer.Typer(
     name="pra",
@@ -142,6 +144,66 @@ def context(
         raise typer.Exit(code=1) from exc
 
     _print_context(pr, pr_context, config)
+
+
+@app.command()
+def index(
+    repo: Annotated[str, typer.Argument(help="Repository in owner/name form.")],
+    ref: Annotated[
+        str,
+        typer.Option("--ref", help="Branch, tag, or SHA to index (default: default branch HEAD)."),
+    ] = "HEAD",
+    force: Annotated[
+        bool,
+        typer.Option("--force", help="Rebuild even if a cached index exists."),
+    ] = False,
+    config_path: Annotated[
+        Path | None,
+        typer.Option("--config", help="Path to config.toml (default: ./config.toml)."),
+    ] = None,
+) -> None:
+    """Build the RAG index for a repo at a commit. Cached by repo + commit SHA."""
+    try:
+        config = load_config(config_path)
+    except ConfigError as exc:
+        err_console.print(f"[red]config error:[/red] {escape(str(exc))}")
+        raise typer.Exit(code=1) from exc
+
+    token = github_token()
+    if token is None:
+        err_console.print(
+            "[yellow]GITHUB_TOKEN not set; using unauthenticated API (60 requests/hour).[/yellow]"
+        )
+
+    cache_root = Path(config.rag.cache_dir)
+    try:
+        with GitHubClient(token, config=config.github) as client:
+            sha = client.resolve_commit_sha(repo, ref)
+        dest = index_dir(cache_root, repo, sha)
+        if index_exists(dest) and not force:
+            console.print(
+                f"Index already built for {escape(repo)}@{sha[:8]} at "
+                f"{escape(str(dest))}; pass --force to rebuild."
+            )
+            return
+        clone_url = f"{config.github.clone_base_url.rstrip('/')}/{repo}.git"
+        embedder = CodeEmbedder(config.rag.embedding_model, device=config.rag.device)
+        with commit_workspace(clone_url, sha, token=token) as workdir:
+            stats = index_repo(workdir, repo, sha, embedder, cache_root=cache_root, force=force)
+    except ImportError as exc:
+        err_console.print(
+            "[red]error:[/red] the rag extra is not installed; "
+            "run [bold]pip install -e \".[rag]\"[/bold]"
+        )
+        raise typer.Exit(code=1) from exc
+    except (GitHubError, WorkspaceError, ValueError) as exc:
+        err_console.print(f"[red]error:[/red] {escape(str(exc))}")
+        raise typer.Exit(code=1) from exc
+
+    console.print(
+        f"Indexed {escape(repo)}@{sha[:8]}: {stats.chunks} chunk(s) from "
+        f"{stats.files} file(s) → {escape(str(stats.dest))}"
+    )
 
 
 @app.command()
